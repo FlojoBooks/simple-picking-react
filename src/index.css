@@ -1,4 +1,4 @@
-/* src/index.css - Tailwind CSS setup */
+/* src/index.css - Tailwind CSS setup with enhanced animations */
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -28,8 +28,133 @@ code {
   }
 }
 
+@keyframes bounce {
+  0%, 20%, 53%, 80%, 100% {
+    transform: translateY(0);
+  }
+  40%, 43% {
+    transform: translateY(-15px);
+  }
+  70% {
+    transform: translateY(-8px);
+  }
+  90% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: .8;
+  }
+}
+
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+  to {
+    transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes fadeInScale {
+  from {
+    transform: scale(0.8);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes labelCreate {
+  0% {
+    transform: scale(0.8) rotate(-10deg);
+    opacity: 0;
+  }
+  50% {
+    transform: scale(1.1) rotate(5deg);
+    opacity: 0.8;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+    opacity: 1;
+  }
+}
+
 .animate-spin {
   animation: spin 1s linear infinite;
+}
+
+.animate-bounce {
+  animation: bounce 1s infinite;
+}
+
+.animate-pulse {
+  animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+.animate-slideInRight {
+  animation: slideInRight 0.5s ease-out;
+}
+
+.animate-fadeInScale {
+  animation: fadeInScale 0.3s ease-out;
+}
+
+.animate-labelCreate {
+  animation: labelCreate 0.6s ease-out;
+}
+
+/* Label creation success animation */
+@keyframes labelSuccess {
+  0% {
+    transform: scale(1);
+    background-color: #dbeafe;
+  }
+  50% {
+    transform: scale(1.05);
+    background-color: #bfdbfe;
+  }
+  100% {
+    transform: scale(1);
+    background-color: #dbeafe;
+  }
+}
+
+.animate-labelSuccess {
+  animation: labelSuccess 0.8s ease-in-out;
+}
+
+/* Download button hover effects */
+.download-button {
+  transition: all 0.2s ease-in-out;
+}
+
+.download-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* Label status indicator animations */
+@keyframes trackingPulse {
+  0%, 100% {
+    color: #059669;
+  }
+  50% {
+    color: #10b981;
+  }
+}
+
+.animate-trackingPulse {
+  animation: trackingPulse 2s ease-in-out infinite;
 }
 
 /* Print styles for labels */
@@ -37,4 +162,64 @@ code {
   .no-print {
     display: none !important;
   }
+}
+
+/* Enhanced visual feedback for button states */
+.button-creating {
+  background: linear-gradient(45deg, #fbbf24, #f59e0b);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.button-success {
+  background: linear-gradient(45deg, #10b981, #059669);
+  animation: fadeInScale 0.5s ease-out;
+}
+
+.button-error {
+  background: linear-gradient(45deg, #ef4444, #dc2626);
+  animation: pulse 0.5s ease-out;
+}
+
+/* Label PDF icon animations */
+@keyframes pdfFloat {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+.animate-pdfFloat {
+  animation: pdfFloat 2s ease-in-out infinite;
+}
+
+/* Notification banner improvements */
+.notification-banner {
+  transition: all 0.3s ease-in-out;
+  transform: translateY(-10px);
+  animation: slideInRight 0.5s ease-out;
+}
+
+/* Loading states */
+.loading-shimmer {
+  background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+/* Enhanced focus states for accessibility */
+.focus-enhanced:focus {
+  outline: 2px solid #3b82f6;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.1);
 }
