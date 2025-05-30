@@ -1,4 +1,4 @@
-// server.js - Enhanced with detailed logging for debugging and FIXED label download endpoints
+// server.js - Enhanced with detailed logging, fixed label downloads, and PRICE UPDATE functionality
 require('dotenv').config();
 
 const express = require('express');
@@ -7,7 +7,7 @@ const path = require('path');
 const fs = require('fs').promises;
 
 // Import API scripts with error handling
-let fetchOrders, generatePickingList, createLabels, createShipments;
+let fetchOrders, generatePickingList, createLabels, createShipments, updatePrices, getPriceProgress, resetPriceProgress;
 
 console.log('📦 Loading API scripts...');
 
@@ -45,6 +45,20 @@ try {
 } catch (error) {
   console.warn('⚠️ BOL create shipments script not available:', error.message);
   createShipments = async () => ({ success: false, message: 'Shipments script not available: ' + error.message });
+}
+
+// NEW: Load price update script
+try {
+  const priceUpdateModule = require('./scripts/bol-update-prices.js');
+  updatePrices = priceUpdateModule.updatePrices;
+  getPriceProgress = priceUpdateModule.getProgress;
+  resetPriceProgress = priceUpdateModule.resetProgress;
+  console.log('✅ BOL price update script loaded');
+} catch (error) {
+  console.warn('⚠️ BOL price update script not available:', error.message);
+  updatePrices = async () => ({ success: false, message: 'Price update script not available: ' + error.message });
+  getPriceProgress = () => ({ stage: 'error', message: 'Price update script not available', isRunning: false });
+  resetPriceProgress = () => {};
 }
 
 console.log('');
@@ -89,6 +103,7 @@ async function setupDirectories() {
     await fs.mkdir('data', { recursive: true });
     await fs.mkdir('uploads', { recursive: true });
     await fs.mkdir('uploads/labels', { recursive: true });
+    await fs.mkdir('reports', { recursive: true }); // NEW: For price update reports
   } catch (error) {
     console.log('Directory setup completed');
   }
@@ -236,6 +251,180 @@ app.post('/api/fetch-orders', requireAuth, async (req, res) => {
     }
   } catch (error) {
     logActivity('orders', `Order fetch error: ${error.message}`, 'error');
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// NEW: Start price update process
+app.post('/api/prices/update', requireAuth, async (req, res) => {
+  try {
+    logActivity('prices', 'Starting BOL.com price update process', 'info');
+    
+    // Check if BOL credentials are configured
+    if (!process.env.CLIENT_ID || !process.env.CLIENT_SECRET) {
+      return res.status(400).json({
+        success: false,
+        message: 'BOL.com API credentials not configured. Please set CLIENT_ID and CLIENT_SECRET environment variables.'
+      });
+    }
+    
+    // Check if update is already running
+    const currentProgress = getPriceProgress();
+    if (currentProgress.isRunning) {
+      return res.status(409).json({
+        success: false,
+        message: 'Price update is already running. Please wait for it to complete.'
+      });
+    }
+    
+    // Start the update process in the background
+    updatePrices().catch(error => {
+      console.error('❌ Price update process failed:', error);
+      logActivity('prices', `Price update failed: ${error.message}`, 'error');
+    });
+    
+    res.json({
+      success: true,
+      message: 'Price update process started successfully'
+    });
+    
+  } catch (error) {
+    logActivity('prices', `Price update start error: ${error.message}`, 'error');
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// NEW: Get price update progress
+app.get('/api/prices/progress', requireAuth, (req, res) => {
+  try {
+    const progress = getPriceProgress();
+    res.json({
+      success: true,
+      progress: progress
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// NEW: Reset price update progress
+app.post('/api/prices/reset', requireAuth, (req, res) => {
+  try {
+    resetPriceProgress();
+    logActivity('prices', 'Price update progress reset', 'info');
+    
+    res.json({
+      success: true,
+      message: 'Price update progress reset successfully'
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// NEW: Download price update reports
+app.get('/api/prices/reports', requireAuth, async (req, res) => {
+  try {
+    const reportsDir = path.join(__dirname, 'reports');
+    
+    try {
+      const files = await fs.readdir(reportsDir);
+      const reportFiles = files.filter(f => f.startsWith('price-update-report-') && f.endsWith('.xlsx'));
+      
+      const fileDetails = await Promise.all(
+        reportFiles.map(async (file) => {
+          try {
+            const filePath = path.join(reportsDir, file);
+            const stats = await fs.stat(filePath);
+            return {
+              filename: file,
+              size: stats.size,
+              created: stats.birthtime,
+              modified: stats.mtime
+            };
+          } catch (error) {
+            return {
+              filename: file,
+              error: error.message
+            };
+          }
+        })
+      );
+      
+      // Sort by creation date, newest first
+      fileDetails.sort((a, b) => new Date(b.created) - new Date(a.created));
+      
+      res.json({
+        success: true,
+        reportsDirectory: reportsDir,
+        totalFiles: reportFiles.length,
+        reports: fileDetails
+      });
+      
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Cannot access reports directory: ' + error.message
+      });
+    }
+    
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// NEW: Download specific price update report
+app.get('/api/prices/reports/:filename', requireAuth, async (req, res) => {
+  try {
+    const { filename } = req.params;
+    
+    // Security check - only allow specific report files
+    if (!filename.startsWith('price-update-report-') || !filename.endsWith('.xlsx')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid report filename'
+      });
+    }
+    
+    const reportsDir = path.join(__dirname, 'reports');
+    const filePath = path.join(reportsDir, filename);
+    
+    try {
+      await fs.access(filePath);
+      
+      // Set appropriate headers for Excel download
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      
+      // Stream the file
+      const fileBuffer = await fs.readFile(filePath);
+      res.send(fileBuffer);
+      
+      logActivity('prices', `Price report downloaded: ${filename}`, 'success');
+      
+    } catch (error) {
+      res.status(404).json({
+        success: false,
+        message: 'Report file not found'
+      });
+    }
+    
+  } catch (error) {
     res.status(500).json({
       success: false,
       message: error.message
@@ -1073,7 +1262,7 @@ app.get('*', (req, res) => {
 // Start server and load data
 app.listen(PORT, async () => {
   console.log(`\n${'='.repeat(50)}`);
-  console.log(`🚀 Simple BOL.com PostNL Picking App`);
+  console.log(`🚀 Simple BOL.com PostNL Picking App with PRICE UPDATES`);
   console.log(`${'='.repeat(50)}`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
@@ -1100,6 +1289,7 @@ app.listen(PORT, async () => {
   
   console.log(`🛒 BOL.com API: ${bolConfigured ? 'Configured ✅' : 'Missing/Placeholder ❌'}`);
   console.log(`📮 PostNL API: ${postnlConfigured ? 'Configured ✅' : 'Missing/Placeholder ❌'}`);
+  console.log(`💰 Price Updates: ${bolConfigured ? 'Available ✅' : 'Requires BOL.com API ❌'}`);
   
   // Setup directories and load data
   await setupDirectories();
