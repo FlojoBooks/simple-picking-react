@@ -1,4 +1,6 @@
 // server.js - Simple Express server with BOL.com and PostNL API integration
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
@@ -7,37 +9,45 @@ const fs = require('fs').promises;
 // Import API scripts with error handling
 let fetchOrders, generatePickingList, createLabels, createShipments;
 
+console.log('📦 Loading API scripts...');
+
 try {
   const bolFetchModule = require('./scripts/bol-fetch-orders.js');
   fetchOrders = bolFetchModule.fetchOrders;
+  console.log('✅ BOL fetch orders script loaded');
 } catch (error) {
   console.warn('⚠️ BOL fetch orders script not available:', error.message);
-  fetchOrders = async () => ({ success: false, message: 'BOL fetch script not available' });
+  fetchOrders = async () => ({ success: false, message: 'BOL fetch script not available: ' + error.message });
 }
 
 try {
   const bolUpdateModule = require('./scripts/bol-picking-list.js');
   generatePickingList = bolUpdateModule.generatePickingList;
+  console.log('✅ BOL picking list script loaded');
 } catch (error) {
   console.warn('⚠️ BOL picking list script not available:', error.message);
-  generatePickingList = async () => ({ success: false, message: 'Picking list script not available' });
+  generatePickingList = async () => ({ success: false, message: 'Picking list script not available: ' + error.message });
 }
 
 try {
   const postnlModule = require('./scripts/postnl-create-labels.js');
   createLabels = postnlModule.createLabels;
+  console.log('✅ PostNL create labels script loaded');
 } catch (error) {
   console.warn('⚠️ PostNL create labels script not available:', error.message);
-  createLabels = async () => ({ success: false, message: 'PostNL labels script not available' });
+  createLabels = async () => ({ success: false, message: 'PostNL labels script not available: ' + error.message });
 }
 
 try {
   const bolShipmentsModule = require('./scripts/bol-create-shipments.js');
   createShipments = bolShipmentsModule.createShipments;
+  console.log('✅ BOL create shipments script loaded');
 } catch (error) {
   console.warn('⚠️ BOL create shipments script not available:', error.message);
-  createShipments = async () => ({ success: false, message: 'Shipments script not available' });
+  createShipments = async () => ({ success: false, message: 'Shipments script not available: ' + error.message });
 }
+
+console.log('');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -446,6 +456,24 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
 
 // Get system status
 app.get('/api/status', (req, res) => {
+  const clientId = process.env.CLIENT_ID;
+  const clientSecret = process.env.CLIENT_SECRET;
+  const apiKey = process.env.API_KEY;
+  const customerCode = process.env.CUSTOMER_CODE;
+  const customerNumber = process.env.CUSTOMER_NUMBER;
+  
+  const bolConfigured = clientId && clientSecret && 
+    !clientId.includes('your_bol') && 
+    !clientSecret.includes('your_bol') &&
+    clientId.length > 10 && 
+    clientSecret.length > 10;
+
+  const postnlConfigured = apiKey && customerCode && customerNumber &&
+    !apiKey.includes('your_postnl') &&
+    !customerCode.includes('your_') &&
+    !customerNumber.includes('your_') &&
+    apiKey.length > 10;
+  
   res.json({
     status: 'running',
     timestamp: new Date().toISOString(),
@@ -453,8 +481,15 @@ app.get('/api/status', (req, res) => {
     pickingItems: currentPickingList.length,
     activeSessions: sessions.size,
     environment: process.env.NODE_ENV || 'development',
-    bolConfigured: !!(process.env.CLIENT_ID && process.env.CLIENT_SECRET),
-    postnlConfigured: !!(process.env.API_KEY && process.env.CUSTOMER_CODE)
+    bolConfigured: bolConfigured,
+    postnlConfigured: postnlConfigured,
+    credentialsDebug: {
+      CLIENT_ID: clientId ? (clientId.includes('your_bol') ? 'placeholder' : 'real') : 'missing',
+      CLIENT_SECRET: clientSecret ? (clientSecret.includes('your_bol') ? 'placeholder' : 'real') : 'missing',
+      API_KEY: apiKey ? (apiKey.includes('your_postnl') ? 'placeholder' : 'real') : 'missing',
+      CUSTOMER_CODE: customerCode ? (customerCode.includes('your_') ? 'placeholder' : 'real') : 'missing',
+      CUSTOMER_NUMBER: customerNumber ? (customerNumber.includes('your_') ? 'placeholder' : 'real') : 'missing'
+    }
   });
 });
 
@@ -471,6 +506,71 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy', timestamp: new Date().toISOString() });
 });
 
+// Import axios for API testing
+const axios = require('axios');
+
+// Test API credentials endpoint
+app.get('/api/test-credentials', requireAuth, async (req, res) => {
+  const results = {
+    timestamp: new Date().toISOString(),
+    tests: {}
+  };
+  
+  // Test BOL.com credentials
+  const clientId = process.env.CLIENT_ID;
+  const clientSecret = process.env.CLIENT_SECRET;
+  
+  if (clientId && clientSecret && !clientId.includes('your_bol')) {
+    try {
+      const credentials = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
+      const response = await axios.post(
+        'https://login.bol.com/token?grant_type=client_credentials',
+        null,
+        {
+          headers: {
+            'Authorization': `Basic ${credentials}`,
+            'Accept': 'application/json'
+          },
+          timeout: 10000
+        }
+      );
+      
+      results.tests.bol = {
+        status: 'success',
+        message: 'BOL.com API credentials are valid',
+        hasToken: !!response.data.access_token
+      };
+    } catch (error) {
+      results.tests.bol = {
+        status: 'error',
+        message: 'BOL.com API authentication failed',
+        error: error.response?.data?.error_description || error.message
+      };
+    }
+  } else {
+    results.tests.bol = {
+      status: 'skipped',
+      message: 'BOL.com credentials not configured or using placeholders'
+    };
+  }
+  
+  // Test PostNL credentials (basic check)
+  const apiKey = process.env.API_KEY;
+  if (apiKey && !apiKey.includes('your_postnl')) {
+    results.tests.postnl = {
+      status: 'configured',
+      message: 'PostNL API key is configured (connection test not implemented)'
+    };
+  } else {
+    results.tests.postnl = {
+      status: 'not_configured',
+      message: 'PostNL API key not configured or using placeholders'
+    };
+  }
+  
+  res.json(results);
+});
+
 // Serve React app
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'build', 'index.html'));
@@ -483,9 +583,29 @@ app.listen(PORT, async () => {
   console.log(`${'='.repeat(50)}`);
   console.log(`📡 Port: ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🔐 Login: ${ADMIN_USERNAME} / ${ADMIN_PASSWORD}`);
-  console.log(`🛒 BOL.com API: ${process.env.CLIENT_ID ? 'Configured' : 'Missing'}`);
-  console.log(`📮 PostNL API: ${process.env.API_KEY ? 'Configured' : 'Missing'}`);
+  console.log(`🔐 Login: ${process.env.ADMIN_USERNAME || 'admin'} / ${process.env.ADMIN_PASSWORD || 'changeme123'}`);
+  
+  // Check API configuration status
+  const clientId = process.env.CLIENT_ID;
+  const clientSecret = process.env.CLIENT_SECRET;
+  const apiKey = process.env.API_KEY;
+  const customerCode = process.env.CUSTOMER_CODE;
+  const customerNumber = process.env.CUSTOMER_NUMBER;
+  
+  const bolConfigured = clientId && clientSecret && 
+    !clientId.includes('your_bol') && 
+    !clientSecret.includes('your_bol') &&
+    clientId.length > 10 && 
+    clientSecret.length > 10;
+
+  const postnlConfigured = apiKey && customerCode && customerNumber &&
+    !apiKey.includes('your_postnl') &&
+    !customerCode.includes('your_') &&
+    !customerNumber.includes('your_') &&
+    apiKey.length > 10;
+  
+  console.log(`🛒 BOL.com API: ${bolConfigured ? 'Configured ✅' : 'Missing/Placeholder ❌'}`);
+  console.log(`📮 PostNL API: ${postnlConfigured ? 'Configured ✅' : 'Missing/Placeholder ❌'}`);
   
   // Setup directories and load data
   await setupDirectories();
