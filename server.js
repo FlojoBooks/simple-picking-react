@@ -71,27 +71,10 @@ let activityLog = [];
 async function setupDirectories() {
   try {
     await fs.mkdir('data', { recursive: true });
+    await fs.mkdir('uploads', { recursive: true });
+    await fs.mkdir('uploads/labels', { recursive: true });
   } catch (error) {
-    console.log('Data directory setup completed');
-  }
-}
-
-// Load persisted data
-async function loadData() {
-  try {
-    const ordersData = await fs.readFile('data/orders.json', 'utf8');
-    currentOrders = JSON.parse(ordersData);
-    console.log(`✅ Loaded ${currentOrders.length} orders`);
-  } catch {
-    console.log('ℹ️ No previous orders found');
-  }
-
-  try {
-    const pickingData = await fs.readFile('data/picking-list.json', 'utf8');
-    currentPickingList = JSON.parse(pickingData);
-    console.log(`✅ Loaded ${currentPickingList.length} picking items`);
-  } catch {
-    console.log('ℹ️ No previous picking list found');
+    console.log('Directory setup completed');
   }
 }
 
@@ -261,7 +244,8 @@ app.get('/api/orders', requireAuth, (req, res) => {
         items: [],
         status: 'open',
         shipped: false,
-        trackingNumber: null
+        trackingNumber: null,
+        labelFilename: null
       });
     }
     
@@ -272,7 +256,8 @@ app.get('/api/orders', requireAuth, (req, res) => {
       sku: item.EAN || 'N/A',
       quantity: item.quantity || 1,
       location: item.location || 'Unknown',
-      picked: item.picked || false
+      picked: item.picked || false,
+      productCode: item.productCode || null // Include product code
     });
     
     // Update order status based on items
@@ -281,6 +266,19 @@ app.get('/api/orders', requireAuth, (req, res) => {
       order.status = 'ready';
     } else if (order.items.some(item => item.picked)) {
       order.status = 'picking';
+    }
+    
+    // Update tracking and label info if shipped
+    if (item.shipped && item.trackingNumber) {
+      order.shipped = true;
+      order.trackingNumber = item.trackingNumber;
+      order.status = 'shipped';
+      
+      // Generate expected label filename
+      if (item.trackingNumber) {
+        const date = new Date(item.shippedAt || Date.now()).toISOString().split('T')[0];
+        order.labelFilename = `label_${orderId}_${item.trackingNumber}_${date}.pdf`;
+      }
     }
   });
   
@@ -293,10 +291,11 @@ app.get('/api/orders', requireAuth, (req, res) => {
   });
 });
 
-// Mark item as picked
+// Mark item as picked with product code
 app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res) => {
   try {
     const { orderId, itemId } = req.params;
+    const { productCode = '3085' } = req.body;
     
     // Update picking list
     const item = currentPickingList.find(item => 
@@ -307,14 +306,16 @@ app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res
     if (item) {
       item.picked = true;
       item.pickTimestamp = new Date().toISOString();
+      item.productCode = productCode; // Store the selected product code
       
       await saveData();
       
-      logActivity('picking', `Item picked: ${item.ProductTitle} for order ${orderId}`, 'success');
+      const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
+      logActivity('picking', `Item picked: ${item.ProductTitle} for order ${orderId} as ${packageType}`, 'success');
       
       res.json({
         success: true,
-        message: 'Item marked as picked'
+        message: `Item marked as picked (${packageType})`
       });
     } else {
       res.status(404).json({
@@ -375,6 +376,10 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
     
     // Prepare shipment data for PostNL
     const firstItem = orderItems[0];
+    
+    // Use the product code from the first picked item, or default to normal package
+    const productCode = firstItem.productCode || '3085';
+    
     const shipmentData = [{
       orderId: orderId,
       firstName: firstItem.FirstName || 'Customer',
@@ -384,7 +389,7 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
       zipcode: firstItem.ShipZipcode || '1000AA',
       city: firstItem.ShipCity || 'Amsterdam',
       email: firstItem.ReceiverEmail || '',
-      productCode: '3085', // Normal package
+      productCode: productCode, // Use the selected product code
       weight: 1000 // Default weight
     }];
     
@@ -401,6 +406,7 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
     
     const label = labelResult.labels[0];
     const trackingNumber = label.trackAndTrace;
+    const labelFilename = label.labelFilename;
     
     // Prepare order items for BOL shipment creation
     const bolOrderItems = orderItems.map(item => ({
@@ -422,11 +428,13 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
       
       await saveData();
       
-      logActivity('shipping', `Order ${orderId} shipped successfully with tracking ${trackingNumber}`, 'success');
+      const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
+      logActivity('shipping', `Order ${orderId} shipped successfully with tracking ${trackingNumber} as ${packageType}`, 'success');
       
       res.json({
         success: true,
         trackingNumber: trackingNumber,
+        labelFilename: labelFilename,
         message: `Order shipped successfully! Tracking: ${trackingNumber}`,
         labelCreated: labelResult.labelsCreated > 0,
         labelPrinted: label.printed || false
@@ -438,6 +446,7 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
       res.json({
         success: true,
         trackingNumber: trackingNumber,
+        labelFilename: labelFilename,
         message: `Label created with tracking ${trackingNumber}, but BOL shipment registration failed: ${shipmentResult.message}`,
         labelCreated: true,
         labelPrinted: label.printed || false,
@@ -447,6 +456,62 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
     
   } catch (error) {
     logActivity('shipping', `Shipping error: ${error.message}`, 'error');
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Download shipping label PDF
+app.get('/api/labels/:orderId/:trackingCode', requireAuth, async (req, res) => {
+  try {
+    const { orderId, trackingCode } = req.params;
+    
+    // Look for label file in uploads/labels directory
+    const labelsDir = path.join(__dirname, 'uploads', 'labels');
+    
+    try {
+      const files = await fs.readdir(labelsDir);
+      
+      // Find the label file that matches the order and tracking code
+      const labelFile = files.find(file => 
+        file.includes(orderId) && 
+        file.includes(trackingCode) && 
+        file.endsWith('.pdf')
+      );
+      
+      if (!labelFile) {
+        return res.status(404).json({
+          success: false,
+          message: 'Label file not found'
+        });
+      }
+      
+      const labelPath = path.join(labelsDir, labelFile);
+      
+      // Check if file exists
+      await fs.access(labelPath);
+      
+      // Set appropriate headers for PDF download
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${labelFile}"`);
+      
+      // Stream the file
+      const fileBuffer = await fs.readFile(labelPath);
+      res.send(fileBuffer);
+      
+      logActivity('labels', `Label downloaded: ${labelFile}`, 'success');
+      
+    } catch (error) {
+      res.status(404).json({
+        success: false,
+        message: 'Label file not found or cannot be accessed'
+      });
+    }
+    
+  } catch (error) {
+    logActivity('labels', `Error downloading label: ${error.message}`, 'error');
     res.status(500).json({
       success: false,
       message: error.message
