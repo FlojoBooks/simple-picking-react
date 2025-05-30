@@ -1,4 +1,4 @@
-// scripts/postnl-create-labels.js - Simplified PostNL label creation
+// scripts/postnl-create-labels.js - Enhanced with detailed logging for debugging
 require('dotenv').config();
 const axios = require('axios');
 const fs = require('fs').promises;
@@ -30,13 +30,27 @@ const SENDER_INFO = {
 // Labels directory
 const LABELS_DIR = path.join(__dirname, '..', 'uploads', 'labels');
 
+// Enhanced logging function
+function detailedLog(category, message, data = null, level = 'info') {
+  const timestamp = new Date().toISOString();
+  const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️', debug: '🔍' };
+  const icon = icons[level] || 'ℹ️';
+  
+  console.log(`${icon} [${timestamp}] [POSTNL-${category.toUpperCase()}] ${message}`);
+  
+  if (data) {
+    console.log(`   📊 Data:`, JSON.stringify(data, null, 2));
+  }
+}
+
 // Ensure labels directory exists
 async function ensureLabelsDirectory() {
   try {
     await fs.access(LABELS_DIR);
+    detailedLog('setup', `Labels directory exists: ${LABELS_DIR}`, null, 'debug');
   } catch {
     await fs.mkdir(LABELS_DIR, { recursive: true });
-    console.log(`📁 Created labels directory: ${LABELS_DIR}`);
+    detailedLog('setup', `Created labels directory: ${LABELS_DIR}`, null, 'success');
   }
 }
 
@@ -45,11 +59,23 @@ function validatePostNLConfig() {
   const requiredFields = ['API_KEY', 'CUSTOMER_NUMBER', 'CUSTOMER_CODE', 'COLLECTION_LOCATION'];
   const missingFields = requiredFields.filter(field => !POSTNL_CONFIG[field]);
   
+  detailedLog('config', 'Validating PostNL configuration', {
+    requiredFields,
+    configStatus: requiredFields.map(field => ({
+      field,
+      hasValue: !!POSTNL_CONFIG[field],
+      valueLength: POSTNL_CONFIG[field] ? POSTNL_CONFIG[field].length : 0,
+      isPlaceholder: POSTNL_CONFIG[field] && POSTNL_CONFIG[field].includes('your_')
+    })),
+    missingFields,
+    apiUrl: POSTNL_CONFIG.API_URL
+  }, 'debug');
+  
   if (missingFields.length > 0) {
     throw new Error(`PostNL configuration incomplete. Missing: ${missingFields.join(', ')}`);
   }
   
-  console.log('✅ PostNL configuration validated');
+  detailedLog('config', 'PostNL configuration validated successfully', null, 'success');
 }
 
 // Generate PostNL tracking code
@@ -62,19 +88,32 @@ function generatePostNLTrackingCode() {
   }
   
   const finalCode = trackingCode + 'NL';
-  console.log(`📦 Generated tracking code: ${finalCode}`);
+  detailedLog('tracking', `Generated tracking code: ${finalCode}`, null, 'debug');
   return finalCode;
 }
 
 // Validate tracking code format
 function validateTrackingCode(trackingCode) {
   const pattern = /^3S[0-9A-Z]{13}NL$/;
-  return pattern.test(trackingCode);
+  const isValid = pattern.test(trackingCode);
+  detailedLog('tracking', `Tracking code validation`, {
+    trackingCode,
+    pattern: pattern.toString(),
+    isValid
+  }, isValid ? 'success' : 'warning');
+  return isValid;
 }
 
 // Create PostNL shipping label
 async function createPostNLLabel(shipmentData) {
+  const startTime = Date.now();
+  
   try {
+    detailedLog('label-creation', 'Starting PostNL label creation', {
+      shipmentData,
+      timestamp: new Date().toISOString()
+    }, 'info');
+    
     if (!shipmentData.receiver) {
       throw new Error('Receiver information is required');
     }
@@ -84,11 +123,20 @@ async function createPostNLLabel(shipmentData) {
     const trackingCode = shipmentData.trackingCode || generatePostNLTrackingCode();
     
     if (!validateTrackingCode(trackingCode)) {
-      console.warn(`⚠️ Invalid tracking code format: ${trackingCode}`);
+      detailedLog('label-creation', `Invalid tracking code format: ${trackingCode}`, null, 'warning');
     }
 
     // Prepare delivery date (tomorrow by default)
     const deliveryDate = shipmentData.deliveryDate || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+    
+    detailedLog('label-creation', 'Prepared label request parameters', {
+      apiUrl,
+      messageId,
+      trackingCode,
+      deliveryDate,
+      productCode: shipmentData.productCode || '3085',
+      weight: parseInt(shipmentData.weight) || parseInt(process.env.DEFAULT_WEIGHT) || 1000
+    }, 'debug');
     
     // Build the label payload
     const labelPayload = {
@@ -148,10 +196,23 @@ async function createPostNLLabel(shipmentData) {
       }]
     };
 
-    console.log(`📮 Creating PostNL label for ${shipmentData.receiver.firstName} ${shipmentData.receiver.lastName}`);
-    console.log(`   📦 Product: ${shipmentData.productCode || '3085'}`);
-    console.log(`   📍 Address: ${shipmentData.receiver.street} ${shipmentData.receiver.houseNumber}, ${shipmentData.receiver.zipcode} ${shipmentData.receiver.city}`);
-    console.log(`   🏷️ Tracking: ${trackingCode}`);
+    detailedLog('label-creation', `Prepared PostNL API payload`, {
+      customer: labelPayload.Customer,
+      message: labelPayload.Message,
+      shipmentAddresses: labelPayload.Shipments[0].Addresses,
+      productCode: labelPayload.Shipments[0].ProductCodeDelivery,
+      weight: labelPayload.Shipments[0].Dimension.Weight,
+      productOptions: labelPayload.Shipments[0].ProductOptions
+    }, 'debug');
+
+    detailedLog('label-creation', `Making API call to PostNL`, {
+      url: apiUrl,
+      method: 'POST',
+      hasApiKey: !!POSTNL_CONFIG.API_KEY,
+      apiKeyLength: POSTNL_CONFIG.API_KEY ? POSTNL_CONFIG.API_KEY.length : 0,
+      receiverInfo: `${shipmentData.receiver.firstName} ${shipmentData.receiver.lastName}`,
+      receiverAddress: `${shipmentData.receiver.street} ${shipmentData.receiver.houseNumber}, ${shipmentData.receiver.zipcode} ${shipmentData.receiver.city}`
+    }, 'info');
 
     const response = await axios.post(apiUrl, labelPayload, {
       headers: {
@@ -162,7 +223,36 @@ async function createPostNLLabel(shipmentData) {
       timeout: 30000
     });
 
-    console.log(`✅ PostNL API response received for ${trackingCode}`);
+    const duration = Date.now() - startTime;
+    detailedLog('label-creation', `PostNL API response received in ${duration}ms`, {
+      status: response.status,
+      statusText: response.statusText,
+      hasData: !!response.data,
+      responseKeys: response.data ? Object.keys(response.data) : [],
+      duration: `${duration}ms`
+    }, 'success');
+    
+    // Log response structure for debugging
+    if (response.data) {
+      detailedLog('api-response', 'PostNL API response structure', {
+        hasLabels: !!(response.data.Labels),
+        labelsCount: response.data.Labels ? response.data.Labels.length : 0,
+        hasResponseShipments: !!(response.data.ResponseShipments),
+        responseShipmentsCount: response.data.ResponseShipments ? response.data.ResponseShipments.length : 0,
+        firstLabelKeys: response.data.Labels && response.data.Labels.length > 0 ? Object.keys(response.data.Labels[0]) : [],
+        responseDataKeys: Object.keys(response.data)
+      }, 'debug');
+      
+      if (response.data.Labels && response.data.Labels.length > 0) {
+        const firstLabel = response.data.Labels[0];
+        detailedLog('api-response', 'First label details', {
+          hasContent: !!firstLabel.Content,
+          contentLength: firstLabel.Content ? firstLabel.Content.length : 0,
+          contentType: firstLabel.Contenttype,
+          labeltype: firstLabel.Labeltype
+        }, 'debug');
+      }
+    }
     
     // Extract final tracking code from response
     let finalTrackingCode = trackingCode;
@@ -170,7 +260,7 @@ async function createPostNLLabel(shipmentData) {
       const responseShipment = response.data.ResponseShipments[0];
       if (responseShipment.Barcode) {
         finalTrackingCode = responseShipment.Barcode;
-        console.log(`📦 Final tracking code from PostNL: ${finalTrackingCode}`);
+        detailedLog('label-creation', `Updated tracking code from PostNL response: ${finalTrackingCode}`, null, 'info');
       }
     }
 
@@ -182,7 +272,26 @@ async function createPostNLLabel(shipmentData) {
     };
 
   } catch (error) {
-    console.error('❌ PostNL API Error:', error.response?.data || error.message);
+    const duration = Date.now() - startTime;
+    detailedLog('label-creation', `PostNL API error after ${duration}ms`, {
+      error: {
+        message: error.message,
+        name: error.name,
+        code: error.code
+      },
+      response: error.response ? {
+        status: error.response.status,
+        statusText: error.response.statusText,
+        data: error.response.data,
+        headers: error.response.headers
+      } : null,
+      request: error.request ? {
+        method: error.request.method,
+        url: error.request.url,
+        timeout: error.request.timeout
+      } : null,
+      duration: `${duration}ms`
+    }, 'error');
     
     // Enhanced error handling
     if (error.response?.data?.fault) {
@@ -190,9 +299,16 @@ async function createPostNLLabel(shipmentData) {
     } else if (error.response?.status === 401) {
       throw new Error('PostNL API authentication failed. Check your API key.');
     } else if (error.response?.status === 400) {
-      throw new Error(`PostNL API bad request: ${error.response.data?.message || 'Invalid request data'}`);
+      const errorMsg = error.response.data?.message || 'Invalid request data';
+      detailedLog('label-creation', 'PostNL API bad request details', {
+        requestData: error.config?.data ? JSON.parse(error.config.data) : null,
+        responseData: error.response.data
+      }, 'error');
+      throw new Error(`PostNL API bad request: ${errorMsg}`);
     } else if (error.code === 'ECONNREFUSED') {
       throw new Error('Cannot connect to PostNL API. Check your internet connection and API URL.');
+    } else if (error.code === 'ETIMEDOUT') {
+      throw new Error('PostNL API request timed out. Please try again.');
     } else {
       throw new Error(`PostNL API error: ${error.message}`);
     }
@@ -202,14 +318,21 @@ async function createPostNLLabel(shipmentData) {
 // Save label PDF
 async function saveLabelPDF(labelData, orderId, trackingCode) {
   try {
+    detailedLog('pdf-save', 'Starting PDF save process', {
+      orderId,
+      trackingCode,
+      hasLabels: !!(labelData.Labels),
+      labelsCount: labelData.Labels ? labelData.Labels.length : 0
+    }, 'debug');
+    
     if (!labelData.Labels || labelData.Labels.length === 0) {
-      console.warn('⚠️ No label data found in response');
+      detailedLog('pdf-save', 'No label data found in response', { labelData }, 'warning');
       return null;
     }
     
     const label = labelData.Labels[0];
     if (!label.Content) {
-      console.warn('⚠️ No label content found in response');
+      detailedLog('pdf-save', 'No label content found in response', { label }, 'warning');
       return null;
     }
     
@@ -224,21 +347,51 @@ async function saveLabelPDF(labelData, orderId, trackingCode) {
     const filename = `label_${orderId}_${trackingCode}_${timestamp}.pdf`;
     const filePath = path.join(LABELS_DIR, filename);
     
+    detailedLog('pdf-save', 'Writing PDF file', {
+      filename,
+      filePath,
+      bufferSize: pdfBuffer.length,
+      timestamp
+    }, 'debug');
+    
     await fs.writeFile(filePath, pdfBuffer);
     
-    console.log(`💾 Label PDF saved: ${filename} (${pdfBuffer.length} bytes)`);
+    // Verify file was written
+    const stats = await fs.stat(filePath);
+    
+    detailedLog('pdf-save', `Label PDF saved successfully`, {
+      filename,
+      fileSize: stats.size,
+      writtenBytes: pdfBuffer.length,
+      filePath
+    }, 'success');
+    
     return filePath;
     
   } catch (error) {
-    console.error('❌ Error saving label PDF:', error);
+    detailedLog('pdf-save', 'Error saving label PDF', {
+      error: {
+        message: error.message,
+        name: error.name,
+        code: error.code
+      },
+      orderId,
+      trackingCode
+    }, 'error');
     return null;
   }
 }
 
 // Main export function
 async function createLabels(shipments = null) {
+  const startTime = Date.now();
+  
   try {
-    console.log('🚀 Starting PostNL label creation...');
+    detailedLog('main', 'Starting PostNL label creation process', {
+      shipmentsProvided: !!(shipments),
+      shipmentsCount: shipments ? shipments.length : 0,
+      timestamp: new Date().toISOString()
+    }, 'info');
     
     // Validate PostNL configuration
     validatePostNLConfig();
@@ -252,12 +405,26 @@ async function createLabels(shipments = null) {
 
     // Process provided shipments
     if (shipments && Array.isArray(shipments) && shipments.length > 0) {
-      console.log(`📦 Creating labels for ${shipments.length} shipments...`);
+      detailedLog('main', `Processing ${shipments.length} shipments for label creation`, {
+        shipments: shipments.map((s, i) => ({
+          index: i,
+          orderId: s.orderId,
+          firstName: s.firstName,
+          lastName: s.lastName,
+          city: s.city,
+          productCode: s.productCode
+        }))
+      }, 'info');
       
       for (let i = 0; i < shipments.length; i++) {
         const shipment = shipments[i];
         
-        console.log(`\n🔄 Processing shipment ${i + 1}/${shipments.length}: Order ${shipment.orderId || 'Unknown'}`);
+        detailedLog('shipment-process', `Processing shipment ${i + 1}/${shipments.length}`, {
+          shipmentIndex: i,
+          orderId: shipment.orderId,
+          customer: `${shipment.firstName} ${shipment.lastName}`,
+          address: `${shipment.street} ${shipment.houseNumber}, ${shipment.zipcode} ${shipment.city}`
+        }, 'info');
         
         try {
           // Validate shipment data
@@ -289,6 +456,12 @@ async function createLabels(shipments = null) {
             weight: parseInt(shipment.weight) || 1000
           };
 
+          detailedLog('shipment-process', 'Prepared shipment data for API call', {
+            shipmentData,
+            messageId,
+            trackingCode
+          }, 'debug');
+
           // Create the label via PostNL API
           const result = await createPostNLLabel(shipmentData);
           
@@ -299,6 +472,17 @@ async function createLabels(shipments = null) {
           // Save PDF label
           const labelPath = await saveLabelPDF(result, shipment.orderId, result.trackingCode || trackingCode);
           const labelFilename = labelPath ? path.basename(labelPath) : null;
+          
+          // Get file size if label was saved
+          let fileSize = 0;
+          if (labelPath) {
+            try {
+              const stats = await fs.stat(labelPath);
+              fileSize = stats.size;
+            } catch (error) {
+              detailedLog('shipment-process', 'Error getting file stats', { error: error.message }, 'warning');
+            }
+          }
           
           // Store label information
           labels.push({
@@ -324,18 +508,29 @@ async function createLabels(shipments = null) {
               success: result.success
             },
             processingTime: new Date().toISOString(),
-            fileSize: labelPath ? (await fs.stat(labelPath)).size : 0
+            fileSize: fileSize
           });
           
           successCount++;
-          console.log(`✅ Label created successfully for order ${shipment.orderId}`);
+          detailedLog('shipment-process', `Label created successfully for order ${shipment.orderId}`, {
+            trackingCode: result.trackingCode || trackingCode,
+            labelFilename,
+            fileSize
+          }, 'success');
           
           // Rate limiting
           await new Promise(resolve => setTimeout(resolve, 1000));
           
         } catch (error) {
           errorCount++;
-          console.error(`❌ Failed to create label for order ${shipment.orderId}:`, error.message);
+          detailedLog('shipment-process', `Failed to create label for order ${shipment.orderId}`, {
+            error: {
+              message: error.message,
+              name: error.name,
+              stack: error.stack
+            },
+            shipment
+          }, 'error');
           
           labels.push({
             orderId: shipment.orderId,
@@ -356,6 +551,7 @@ async function createLabels(shipments = null) {
         }
       }
     } else {
+      detailedLog('main', 'No shipments provided for label creation', null, 'warning');
       return {
         success: false,
         message: 'No shipments provided for label creation',
@@ -367,8 +563,14 @@ async function createLabels(shipments = null) {
       };
     }
 
-    console.log(`\n✅ PostNL label creation completed: ${successCount} successful, ${errorCount} failed`);
-    console.log(`📁 Labels saved to: ${LABELS_DIR}`);
+    const duration = Date.now() - startTime;
+    detailedLog('main', `PostNL label creation completed in ${duration}ms`, {
+      successCount,
+      errorCount,
+      totalProcessed: successCount + errorCount,
+      labelsDirectory: LABELS_DIR,
+      duration: `${duration}ms`
+    }, 'success');
 
     return {
       success: successCount > 0,
@@ -382,7 +584,15 @@ async function createLabels(shipments = null) {
     };
 
   } catch (error) {
-    console.error('❌ Critical error in createLabels:', error.message);
+    const duration = Date.now() - startTime;
+    detailedLog('main', `Critical error in createLabels after ${duration}ms`, {
+      error: {
+        message: error.message,
+        name: error.name,
+        stack: error.stack
+      },
+      duration: `${duration}ms`
+    }, 'error');
     
     return {
       success: false,
