@@ -1,0 +1,52 @@
+# Railway ignore file
+# Files and directories to exclude from Railway deployments
+
+# Development files
+README.md
+*.md
+docs/
+.github/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.atom/
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git files
+.git/
+.gitignore
+.gitattributes
+
+# Local development
+.env.example
+.env.local
+.env.development
+
+# Test files
+test/
+tests/
+__tests__/
+*.test.js
+*.spec.js
+
+# Documentation
+docs/
+documentation/
+
+# Local data that shouldn't be deployed
+data/
+uploads/labels/
+
+# Development dependencies (if not needed in production)
+# Note: Keep node_modules out as Railway will install them
