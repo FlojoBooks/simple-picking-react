@@ -1,7 +1,14 @@
 // scripts/bol-fetch-orders.js - Simplified BOL.com order fetching
-import axios from 'axios';
+require('dotenv').config();
+const axios = require('axios');
 
-const { CLIENT_ID, CLIENT_SECRET } = process.env;
+// Access environment variables directly
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+
+// Debug logging
+console.log(`🔍 BOL Fetch Orders - CLIENT_ID: ${CLIENT_ID ? 'loaded' : 'missing'}`);
+console.log(`🔍 BOL Fetch Orders - CLIENT_SECRET: ${CLIENT_SECRET ? 'loaded' : 'missing'}`);
 
 let token = null;
 let tokenTimestamp = 0;
@@ -118,7 +125,7 @@ async function fetchAllOrders() {
 }
 
 // Main export function
-export async function fetchOrders() {
+async function fetchOrders() {
   const startTime = Date.now();
   
   try {
@@ -179,3 +186,5 @@ export async function fetchOrders() {
     };
   }
 }
+
+module.exports = { fetchOrders };
