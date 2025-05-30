@@ -1,5 +1,4 @@
-// server.js - Simple Express server with BOL.com and PostNL API integration
-// Updated for immediate label creation on item pick
+// server.js - Enhanced with detailed logging for debugging
 require('dotenv').config();
 
 const express = require('express');
@@ -67,6 +66,22 @@ let currentOrders = [];
 let currentPickingList = [];
 let sessions = new Map();
 let activityLog = [];
+
+// Enhanced logging function
+function detailedLog(category, message, data = null, level = 'info') {
+  const timestamp = new Date().toISOString();
+  const icons = { info: 'ℹ️', success: '✅', error: '❌', warning: '⚠️', debug: '🔍' };
+  const icon = icons[level] || 'ℹ️';
+  
+  console.log(`${icon} [${timestamp}] [${category.toUpperCase()}] ${message}`);
+  
+  if (data) {
+    console.log(`   📊 Data:`, JSON.stringify(data, null, 2));
+  }
+  
+  // Also add to activity log
+  logActivity(category, message, level);
+}
 
 // Ensure data directory exists
 async function setupDirectories() {
@@ -302,13 +317,19 @@ app.get('/api/orders', requireAuth, (req, res) => {
   });
 });
 
-// Mark item as picked with immediate label creation
+// Enhanced pick endpoint with detailed logging
 app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res) => {
+  const startTime = Date.now();
+  const { orderId, itemId } = req.params;
+  const { productCode = '3085' } = req.body;
+  
   try {
-    const { orderId, itemId } = req.params;
-    const { productCode = '3085' } = req.body;
-    
-    logActivity('picking', `Starting pick process for item ${itemId} in order ${orderId}`, 'info');
+    detailedLog('picking', `Starting pick process for item ${itemId} in order ${orderId}`, {
+      orderId,
+      itemId,
+      productCode,
+      timestamp: new Date().toISOString()
+    }, 'info');
     
     // Check PostNL configuration first
     const requiredPostNLVars = [
@@ -320,11 +341,21 @@ app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res
     const missingVars = requiredPostNLVars.filter(varName => !process.env[varName]);
     
     if (missingVars.length > 0) {
+      detailedLog('picking', 'PostNL configuration incomplete', { missingVars }, 'error');
       return res.status(400).json({
         success: false,
         message: `PostNL configuration incomplete. Missing: ${missingVars.join(', ')}`
       });
     }
+
+    detailedLog('picking', 'PostNL configuration validated successfully', {
+      configuredVars: requiredPostNLVars.filter(varName => process.env[varName]).map(varName => ({
+        name: varName,
+        hasValue: !!process.env[varName],
+        valueLength: process.env[varName] ? process.env[varName].length : 0,
+        startsWithPlaceholder: process.env[varName] && process.env[varName].includes('your_')
+      }))
+    }, 'debug');
     
     // Find the item in picking list
     const item = currentPickingList.find(item => 
@@ -333,11 +364,33 @@ app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res
     );
     
     if (!item) {
+      detailedLog('picking', 'Item not found in picking list', {
+        orderId,
+        itemId,
+        availableItems: currentPickingList.filter(i => i.MessageID === orderId).map(i => ({
+          orderItemId: i.OrderItemID,
+          ean: i.EAN,
+          productTitle: i.ProductTitle
+        }))
+      }, 'error');
+      
       return res.status(404).json({
         success: false,
         message: 'Item not found'
       });
     }
+
+    detailedLog('picking', 'Found item in picking list', {
+      itemDetails: {
+        orderItemId: item.OrderItemID,
+        productTitle: item.ProductTitle,
+        ean: item.EAN,
+        firstName: item.FirstName,
+        lastName: item.LastName,
+        address: `${item.ShipStreet} ${item.ShipHouseNr}, ${item.ShipZipcode} ${item.ShipCity}`,
+        email: item.ReceiverEmail
+      }
+    }, 'debug');
     
     // Prepare shipment data for PostNL label creation
     const shipmentData = [{
@@ -355,22 +408,74 @@ app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res
       weight: 1000 // Default weight
     }];
     
-    logActivity('picking', `Creating PostNL label for item ${item.ProductTitle} as ${productCode === '2928' ? 'mailbox package' : 'normal package'}`, 'info');
+    detailedLog('picking', `Prepared shipment data for PostNL`, {
+      shipmentData: shipmentData[0],
+      packageType: productCode === '2928' ? 'mailbox package' : 'normal package'
+    }, 'info');
+    
+    detailedLog('picking', `Creating PostNL label for item ${item.ProductTitle}`, {
+      productCode,
+      packageType: productCode === '2928' ? 'mailbox package' : 'normal package'
+    }, 'info');
     
     // Create PostNL label immediately
     const labelResult = await createLabels(shipmentData);
     
+    detailedLog('picking', 'PostNL createLabels response received', {
+      success: labelResult.success,
+      message: labelResult.message,
+      labelsCreated: labelResult.labelsCreated,
+      labelsErrored: labelResult.labelsErrored,
+      totalProcessed: labelResult.totalProcessed,
+      hasLabels: !!(labelResult.labels && labelResult.labels.length > 0),
+      labelCount: labelResult.labels ? labelResult.labels.length : 0,
+      firstLabelData: labelResult.labels && labelResult.labels.length > 0 ? {
+        orderId: labelResult.labels[0].orderId,
+        status: labelResult.labels[0].status,
+        trackAndTrace: labelResult.labels[0].trackAndTrace,
+        labelFilename: labelResult.labels[0].labelFilename,
+        error: labelResult.labels[0].error
+      } : null,
+      error: labelResult.error
+    }, labelResult.success ? 'success' : 'error');
+    
     if (!labelResult.success || !labelResult.labels || labelResult.labels.length === 0) {
-      logActivity('picking', `PostNL label creation failed: ${labelResult.message}`, 'error');
+      const errorMsg = `PostNL label creation failed: ${labelResult.message}`;
+      detailedLog('picking', errorMsg, {
+        labelResult,
+        shipmentData: shipmentData[0]
+      }, 'error');
+      
       return res.status(500).json({
         success: false,
-        message: `Failed to create shipping label: ${labelResult.message}`
+        message: errorMsg
       });
     }
     
     const label = labelResult.labels[0];
+    
+    if (label.status === 'failed') {
+      detailedLog('picking', 'PostNL label creation failed for individual item', {
+        label,
+        error: label.error
+      }, 'error');
+      
+      return res.status(500).json({
+        success: false,
+        message: `Failed to create shipping label: ${label.error || 'Unknown error'}`
+      });
+    }
+    
     const trackingNumber = label.trackAndTrace;
     const labelFilename = label.labelFilename;
+    
+    detailedLog('picking', 'PostNL label created successfully', {
+      trackingNumber,
+      labelFilename,
+      labelPath: label.labelPath,
+      customerName: label.customerName,
+      productCode: label.productCode
+    }, 'success');
     
     // Update the item with pick status, product code, and label info
     item.picked = true;
@@ -384,7 +489,17 @@ app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res
     await saveData();
     
     const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
-    logActivity('picking', `Item picked and label created: ${item.ProductTitle} for order ${orderId} as ${packageType} with tracking ${trackingNumber}`, 'success');
+    const duration = Date.now() - startTime;
+    
+    detailedLog('picking', `Pick process completed successfully in ${duration}ms`, {
+      orderId,
+      itemId,
+      productTitle: item.ProductTitle,
+      packageType,
+      trackingNumber,
+      labelFilename,
+      duration: `${duration}ms`
+    }, 'success');
     
     res.json({
       success: true,
@@ -394,7 +509,19 @@ app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res
     });
     
   } catch (error) {
-    logActivity('picking', `Error in pick process: ${error.message}`, 'error');
+    const duration = Date.now() - startTime;
+    detailedLog('picking', `Error in pick process after ${duration}ms: ${error.message}`, {
+      orderId,
+      itemId,
+      productCode,
+      error: {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      },
+      duration: `${duration}ms`
+    }, 'error');
+    
     res.status(500).json({
       success: false,
       message: error.message
@@ -506,11 +633,22 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
   try {
     const { orderId, itemId, trackingCode } = req.params;
     
+    detailedLog('labels', `Attempting to download label for item`, {
+      orderId,
+      itemId,
+      trackingCode
+    }, 'debug');
+    
     // Look for label file in uploads/labels directory
     const labelsDir = path.join(__dirname, 'uploads', 'labels');
     
     try {
       const files = await fs.readdir(labelsDir);
+      
+      detailedLog('labels', `Found ${files.length} files in labels directory`, {
+        files: files.slice(0, 10), // Show first 10 files
+        searchPattern: `${orderId}_${itemId}_${trackingCode}`
+      }, 'debug');
       
       // Find the label file that matches the order, item and tracking code
       const labelFile = files.find(file => 
@@ -520,6 +658,11 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
       );
       
       if (!labelFile) {
+        detailedLog('labels', 'Label file not found', {
+          searchPattern: `${orderId}_${itemId}_${trackingCode}`,
+          availableFiles: files.filter(f => f.endsWith('.pdf'))
+        }, 'warning');
+        
         return res.status(404).json({
           success: false,
           message: 'Label file not found'
@@ -539,9 +682,17 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
       const fileBuffer = await fs.readFile(labelPath);
       res.send(fileBuffer);
       
-      logActivity('labels', `Item label downloaded: ${labelFile}`, 'success');
+      detailedLog('labels', `Item label downloaded successfully`, {
+        labelFile,
+        fileSize: fileBuffer.length
+      }, 'success');
       
     } catch (error) {
+      detailedLog('labels', 'Error accessing label file', {
+        error: error.message,
+        labelsDir
+      }, 'error');
+      
       res.status(404).json({
         success: false,
         message: 'Label file not found or cannot be accessed'
@@ -549,7 +700,11 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
     }
     
   } catch (error) {
-    logActivity('labels', `Error downloading item label: ${error.message}`, 'error');
+    detailedLog('labels', `Error downloading item label: ${error.message}`, {
+      error: error.message,
+      stack: error.stack
+    }, 'error');
+    
     res.status(500).json({
       success: false,
       message: error.message
@@ -713,13 +868,96 @@ app.get('/api/test-credentials', requireAuth, async (req, res) => {
     };
   }
   
-  // Test PostNL credentials (basic check)
+  // Test PostNL credentials (enhanced check)
   const apiKey = process.env.API_KEY;
+  const apiUrl = process.env.API_URL || 'https://api-sandbox.postnl.nl';
+  const customerNumber = process.env.CUSTOMER_NUMBER;
+  const customerCode = process.env.CUSTOMER_CODE;
+  
   if (apiKey && !apiKey.includes('your_postnl')) {
-    results.tests.postnl = {
-      status: 'configured',
-      message: 'PostNL API key is configured (connection test not implemented)'
-    };
+    try {
+      // Try to make a simple API call to test authentication
+      // Using a minimal test payload
+      const testPayload = {
+        Customer: {
+          CustomerNumber: customerNumber,
+          CustomerCode: customerCode,
+          CollectionLocation: process.env.COLLECTION_LOCATION
+        },
+        Message: {
+          MessageID: `TEST_${Date.now()}`,
+          MessageTimeStamp: new Date().toISOString(),
+          Printertype: 'GraphicFile|PDF'
+        },
+        Shipments: [{
+          Addresses: [
+            {
+              AddressType: '01',
+              CompanyName: 'Test Company',
+              Name: 'Test Sender',
+              Street: 'Test Street',
+              HouseNr: '1',
+              Zipcode: '1000AA',
+              City: 'Amsterdam',
+              Countrycode: 'NL'
+            },
+            {
+              AddressType: '02',
+              Name: 'Test Receiver',
+              Street: 'Test Street',
+              HouseNr: '1',
+              Zipcode: '1000AA',
+              City: 'Amsterdam',
+              Countrycode: 'NL'
+            }
+          ],
+          ProductCodeDelivery: '3085',
+          PhaseCode: '1',
+          Reference: 'TEST',
+          DeliveryDate: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0],
+          Barcode: '3STEST123456789NL',
+          Dimension: {
+            Weight: 1000
+          },
+          ProductOptions: [{
+            Option: '01',
+            Characteristic: '118'
+          }]
+        }]
+      };
+
+      const testResponse = await axios.post(
+        `${apiUrl}/shipment/v2_2/label`,
+        testPayload,
+        {
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'apikey': apiKey
+          },
+          timeout: 15000
+        }
+      );
+
+      results.tests.postnl = {
+        status: 'success',
+        message: 'PostNL API credentials are valid and API is accessible',
+        apiUrl: apiUrl,
+        responseStatus: testResponse.status
+      };
+    } catch (error) {
+      results.tests.postnl = {
+        status: 'error',
+        message: 'PostNL API test failed',
+        apiUrl: apiUrl,
+        error: {
+          status: error.response?.status,
+          statusText: error.response?.statusText,
+          message: error.response?.data?.fault?.faultstring || error.message,
+          data: error.response?.data
+        }
+      };
+    }
   } else {
     results.tests.postnl = {
       status: 'not_configured',
@@ -728,6 +966,47 @@ app.get('/api/test-credentials', requireAuth, async (req, res) => {
   }
   
   res.json(results);
+});
+
+// Debug endpoint for PostNL configuration
+app.get('/api/debug/postnl-config', requireAuth, (req, res) => {
+  const envVars = [
+    'API_KEY', 'API_URL', 'CUSTOMER_NUMBER', 'CUSTOMER_CODE', 'COLLECTION_LOCATION',
+    'SENDER_NAME', 'SENDER_EMAIL', 'COMPANY_NAME', 'COMPANY_STREET', 'COMPANY_HOUSENR',
+    'COMPANY_ZIP', 'COMPANY_CITY', 'COMPANY_COUNTRY', 'DEFAULT_WEIGHT'
+  ];
+
+  const config = {
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    postnlConfig: {},
+    configStatus: {}
+  };
+
+  envVars.forEach(varName => {
+    const value = process.env[varName];
+    config.postnlConfig[varName] = {
+      hasValue: !!value,
+      valueLength: value ? value.length : 0,
+      isPlaceholder: value && value.includes('your_'),
+      startsWithCorrectFormat: varName === 'API_KEY' ? (value && value.length > 20) : true
+    };
+  });
+
+  // Overall status
+  const requiredVars = ['API_KEY', 'CUSTOMER_NUMBER', 'CUSTOMER_CODE', 'COLLECTION_LOCATION'];
+  const missingRequired = requiredVars.filter(varName => !process.env[varName]);
+  const hasPlaceholders = envVars.filter(varName => process.env[varName] && process.env[varName].includes('your_'));
+
+  config.configStatus = {
+    allRequiredPresent: missingRequired.length === 0,
+    missingRequired,
+    hasPlaceholders: hasPlaceholders.length > 0,
+    placeholderVars: hasPlaceholders,
+    readyForProduction: missingRequired.length === 0 && hasPlaceholders.length === 0
+  };
+
+  res.json(config);
 });
 
 // Serve React app
