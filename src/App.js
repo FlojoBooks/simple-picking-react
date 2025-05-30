@@ -1,6 +1,6 @@
-// src/App.js - Main React application component
+// src/App.js - Main React application component with enhanced label feedback
 import React, { useState, useEffect } from 'react';
-import { Package, Truck, CheckCircle, Clock, User, LogOut, RefreshCw, MapPin } from 'lucide-react';
+import { Package, Truck, CheckCircle, Clock, User, LogOut, RefreshCw, MapPin, FileText, Download, Loader } from 'lucide-react';
 
 const App = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -12,6 +12,8 @@ const App = () => {
   const [sessionId, setSessionId] = useState('');
   const [showProductCodeModal, setShowProductCodeModal] = useState(false);
   const [selectedItem, setSelectedItem] = useState(null);
+  const [labelCreationStatus, setLabelCreationStatus] = useState({}); // Track label creation per item
+  const [showLabelAnimation, setShowLabelAnimation] = useState({}); // Track animations per item
 
   // Load orders from API
   useEffect(() => {
@@ -67,6 +69,8 @@ const App = () => {
     setMessage('');
     setSessionId('');
     setOrders([]);
+    setLabelCreationStatus({});
+    setShowLabelAnimation({});
   };
 
   const fetchOrders = async () => {
@@ -117,6 +121,14 @@ const App = () => {
   };
 
   const markItemPicked = async (orderId, itemId, productCode = '3085') => {
+    const itemKey = `${orderId}-${itemId}`;
+    
+    // Set loading state for this specific item
+    setLabelCreationStatus(prev => ({
+      ...prev,
+      [itemKey]: 'creating'
+    }));
+
     try {
       const response = await fetch(`/api/orders/${orderId}/items/${itemId}/pick`, {
         method: 'POST',
@@ -134,7 +146,14 @@ const App = () => {
         setOrders(orders.map(order => {
           if (order.id === orderId) {
             const updatedItems = order.items.map(item => 
-              item.id === itemId ? { ...item, picked: true, productCode } : item
+              item.id === itemId ? { 
+                ...item, 
+                picked: true, 
+                productCode,
+                trackingNumber: result.trackingNumber,
+                labelFilename: result.labelFilename,
+                labelCreated: true
+              } : item
             );
             const allPicked = updatedItems.every(item => item.picked);
             return {
@@ -146,13 +165,41 @@ const App = () => {
           return order;
         }));
         
+        // Set success state and show animation
+        setLabelCreationStatus(prev => ({
+          ...prev,
+          [itemKey]: 'success'
+        }));
+
+        // Show the label animation
+        setShowLabelAnimation(prev => ({
+          ...prev,
+          [itemKey]: true
+        }));
+
+        // Hide animation after 3 seconds
+        setTimeout(() => {
+          setShowLabelAnimation(prev => ({
+            ...prev,
+            [itemKey]: false
+          }));
+        }, 3000);
+        
         const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
-        setMessage(`Item picked as ${packageType}!`);
-        setTimeout(() => setMessage(''), 3000);
+        setMessage(`Item picked as ${packageType}! Label created with tracking: ${result.trackingNumber}`);
+        setTimeout(() => setMessage(''), 5000);
       } else {
+        setLabelCreationStatus(prev => ({
+          ...prev,
+          [itemKey]: 'error'
+        }));
         setMessage('Failed to mark item as picked: ' + result.message);
       }
     } catch (error) {
+      setLabelCreationStatus(prev => ({
+        ...prev,
+        [itemKey]: 'error'
+      }));
       setMessage('Error marking item as picked: ' + error.message);
     }
   };
@@ -170,9 +217,37 @@ const App = () => {
     setSelectedItem(null);
   };
 
+  const downloadItemLabel = async (orderId, itemId, trackingNumber) => {
+    try {
+      const response = await fetch(`/api/labels/item/${orderId}/${itemId}/${trackingNumber}`, {
+        headers: {
+          'x-session-id': sessionId
+        }
+      });
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = `label_${orderId}_${itemId}_${trackingNumber}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        setMessage(`Label downloaded: ${trackingNumber}`);
+        setTimeout(() => setMessage(''), 3000);
+      } else {
+        setMessage('Failed to download label');
+      }
+    } catch (error) {
+      setMessage('Error downloading label: ' + error.message);
+    }
+  };
+
   const shipOrder = async (orderId) => {
     setLoading(true);
-    setMessage('Creating PostNL shipping label...');
+    setMessage('Registering shipment with BOL.com...');
     
     try {
       const response = await fetch(`/api/orders/${orderId}/ship`, {
@@ -186,23 +261,20 @@ const App = () => {
       const result = await response.json();
       
       if (result.success) {
-        const trackingNumber = result.trackingNumber;
-        const labelFilename = result.labelFilename;
-        
         // Update local state
         setOrders(orders.map(order => 
           order.id === orderId 
             ? { 
                 ...order, 
                 shipped: true, 
-                trackingNumber, 
-                status: 'shipped',
-                labelFilename: labelFilename
+                trackingNumbers: result.trackingNumbers || [],
+                status: 'shipped'
               }
             : order
         ));
         
-        setMessage(`Order shipped successfully! Tracking: ${trackingNumber}`);
+        const trackingCount = result.trackingNumbers ? result.trackingNumbers.length : 0;
+        setMessage(`Order shipped successfully! ${trackingCount} tracking numbers registered with BOL.com`);
       } else {
         setMessage('Failed to ship order: ' + result.message);
       }
@@ -246,6 +318,17 @@ const App = () => {
     if (order.status === 'ready') return { text: 'Ready to Ship', color: 'text-blue-600', bg: 'bg-blue-100' };
     if (order.status === 'picking') return { text: 'Picking', color: 'text-orange-600', bg: 'bg-orange-100' };
     return { text: 'Open', color: 'text-gray-600', bg: 'bg-gray-100' };
+  };
+
+  // Helper function to get item status
+  const getItemStatus = (orderId, itemId) => {
+    const itemKey = `${orderId}-${itemId}`;
+    return labelCreationStatus[itemKey] || 'idle';
+  };
+
+  const getItemAnimation = (orderId, itemId) => {
+    const itemKey = `${orderId}-${itemId}`;
+    return showLabelAnimation[itemKey] || false;
   };
 
   // Login Screen
@@ -372,9 +455,9 @@ const App = () => {
         {/* Status Message */}
         {message && (
           <div className={`mb-6 p-4 rounded-md ${
-            message.includes('success') || message.includes('shipped') || message.includes('picked') || message.includes('downloaded')
+            message.includes('success') || message.includes('shipped') || message.includes('picked') || message.includes('downloaded') || message.includes('Label created')
               ? 'bg-green-100 text-green-700' 
-              : message.includes('Invalid')
+              : message.includes('Invalid') || message.includes('Failed') || message.includes('Error')
               ? 'bg-red-100 text-red-700'
               : 'bg-blue-100 text-blue-700'
           }`}>
@@ -459,22 +542,11 @@ const App = () => {
                         {order.address}
                       </div>
                       
-                      {order.trackingNumber && (
+                      {order.trackingNumbers && order.trackingNumbers.length > 0 && (
                         <div className="mt-2 p-2 bg-green-50 rounded-md">
-                          <div className="flex items-center justify-between">
-                            <p className="text-sm text-green-700">
-                              <strong>Tracking:</strong> {order.trackingNumber}
-                            </p>
-                            {order.labelFilename && (
-                              <button
-                                onClick={() => downloadLabel(order.id, order.trackingNumber)}
-                                className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700"
-                                title="Download shipping label"
-                              >
-                                Download Label
-                              </button>
-                            )}
-                          </div>
+                          <p className="text-sm text-green-700">
+                            <strong>Tracking Numbers:</strong> {order.trackingNumbers.join(', ')}
+                          </p>
                         </div>
                       )}
                     </div>
@@ -494,51 +566,92 @@ const App = () => {
                   {/* Items */}
                   <div className="space-y-3">
                     <h4 className="font-medium text-gray-900">Items to pick:</h4>
-                    {order.items.map(item => (
-                      <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-md">
-                        <div className="flex-1">
-                          <div className="flex items-center gap-3">
-                            <span className="font-medium">{item.name}</span>
-                            <span className="text-sm text-gray-500">({item.sku})</span>
-                            <span className="text-sm text-gray-500">Qty: {item.quantity}</span>
-                          </div>
-                          <p className="text-sm text-blue-600 mt-1">Location: {item.location}</p>
-                        </div>
-                        
-                        {!order.shipped && (
-                          <button
-                            onClick={() => handlePickItemClick(order.id, item.id)}
-                            disabled={item.picked}
-                            className={`px-3 py-1 rounded text-sm font-medium ${
-                              item.picked
-                                ? 'bg-green-100 text-green-800 cursor-not-allowed'
-                                : 'bg-blue-600 text-white hover:bg-blue-700'
-                            }`}
-                          >
-                            {item.picked ? (
-                              <span className="flex items-center gap-1">
-                                <CheckCircle className="w-4 h-4" />
-                                Picked
-                                {item.productCode && (
-                                  <span className="ml-1 text-xs">
-                                    ({item.productCode === '2928' ? 'Mailbox' : 'Normal'})
-                                  </span>
+                    {order.items.map(item => {
+                      const itemStatus = getItemStatus(order.id, item.id);
+                      const showAnimation = getItemAnimation(order.id, item.id);
+                      
+                      return (
+                        <div key={item.id} className="flex items-center justify-between p-3 bg-gray-50 rounded-md">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-3">
+                              <span className="font-medium">{item.name}</span>
+                              <span className="text-sm text-gray-500">({item.sku})</span>
+                              <span className="text-sm text-gray-500">Qty: {item.quantity}</span>
+                            </div>
+                            <p className="text-sm text-blue-600 mt-1">Location: {item.location}</p>
+                            
+                            {/* Label status and download */}
+                            {item.picked && item.trackingNumber && (
+                              <div className="flex items-center gap-2 mt-2">
+                                <span className="text-xs text-green-600">
+                                  📦 {item.trackingNumber}
+                                </span>
+                                {item.labelCreated && (
+                                  <button
+                                    onClick={() => downloadItemLabel(order.id, item.id, item.trackingNumber)}
+                                    className="flex items-center gap-1 px-2 py-1 bg-blue-600 text-white text-xs rounded hover:bg-blue-700 transition-colors"
+                                    title="Download label PDF"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                    Label PDF
+                                  </button>
                                 )}
-                              </span>
-                            ) : (
-                              'Pick Item'
+                              </div>
                             )}
-                          </button>
-                        )}
-                        
-                        {order.shipped && (
-                          <span className="flex items-center gap-1 text-green-600 text-sm">
-                            <CheckCircle className="w-4 h-4" />
-                            Shipped
-                          </span>
-                        )}
-                      </div>
-                    ))}
+                          </div>
+                          
+                          <div className="flex items-center gap-2">
+                            {/* Label Animation */}
+                            {showAnimation && (
+                              <div className="flex items-center gap-2 mr-2 p-2 bg-blue-100 rounded-md animate-pulse">
+                                <FileText className="w-4 h-4 text-blue-600 animate-bounce" />
+                                <span className="text-xs text-blue-700 font-medium">Label Created!</span>
+                              </div>
+                            )}
+                            
+                            {!order.shipped && (
+                              <button
+                                onClick={() => handlePickItemClick(order.id, item.id)}
+                                disabled={item.picked || itemStatus === 'creating'}
+                                className={`px-3 py-1 rounded text-sm font-medium flex items-center gap-1 ${
+                                  item.picked
+                                    ? 'bg-green-100 text-green-800 cursor-not-allowed'
+                                    : itemStatus === 'creating'
+                                    ? 'bg-yellow-100 text-yellow-800 cursor-not-allowed'
+                                    : 'bg-blue-600 text-white hover:bg-blue-700'
+                                }`}
+                              >
+                                {itemStatus === 'creating' ? (
+                                  <>
+                                    <Loader className="w-4 h-4 animate-spin" />
+                                    Creating Label...
+                                  </>
+                                ) : item.picked ? (
+                                  <>
+                                    <CheckCircle className="w-4 h-4" />
+                                    Picked
+                                    {item.productCode && (
+                                      <span className="ml-1 text-xs">
+                                        ({item.productCode === '2928' ? 'Mailbox' : 'Normal'})
+                                      </span>
+                                    )}
+                                  </>
+                                ) : (
+                                  'Pick Item'
+                                )}
+                              </button>
+                            )}
+                            
+                            {order.shipped && (
+                              <span className="flex items-center gap-1 text-green-600 text-sm">
+                                <CheckCircle className="w-4 h-4" />
+                                Shipped
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               );
