@@ -1,4 +1,4 @@
-// server.js - Enhanced with detailed logging for debugging
+// server.js - Enhanced with detailed logging for debugging and FIXED label download endpoints
 require('dotenv').config();
 
 const express = require('express');
@@ -628,7 +628,7 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
   }
 });
 
-// Download individual item label
+// FIXED: Download individual item label - searches by tracking code only
 app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (req, res) => {
   try {
     const { orderId, itemId, trackingCode } = req.params;
@@ -647,25 +647,27 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
       
       detailedLog('labels', `Found ${files.length} files in labels directory`, {
         files: files.slice(0, 10), // Show first 10 files
-        searchPattern: `${orderId}_${itemId}_${trackingCode}`
+        trackingCodeSearch: trackingCode
       }, 'debug');
       
-      // Find the label file that matches the order, item and tracking code
+      // FIXED: Look for file that matches the tracking code (which is how files are actually saved)
+      // The file is saved as just "trackingCode.pdf", so search for that pattern
       const labelFile = files.find(file => 
-        file.includes(`${orderId}_${itemId}`) && 
-        file.includes(trackingCode) && 
-        file.endsWith('.pdf')
+        file === `${trackingCode}.pdf` || // Exact match first
+        (file.includes(trackingCode) && file.endsWith('.pdf')) // Fallback: contains tracking code
       );
       
       if (!labelFile) {
         detailedLog('labels', 'Label file not found', {
-          searchPattern: `${orderId}_${itemId}_${trackingCode}`,
-          availableFiles: files.filter(f => f.endsWith('.pdf'))
+          trackingCodeSearched: trackingCode,
+          expectedFilename: `${trackingCode}.pdf`,
+          availableFiles: files.filter(f => f.endsWith('.pdf')),
+          availableTrackingCodes: files.filter(f => f.endsWith('.pdf')).map(f => f.replace('.pdf', ''))
         }, 'warning');
         
         return res.status(404).json({
           success: false,
-          message: 'Label file not found'
+          message: `Label file not found for tracking code: ${trackingCode}`
         });
       }
       
@@ -684,13 +686,17 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
       
       detailedLog('labels', `Item label downloaded successfully`, {
         labelFile,
-        fileSize: fileBuffer.length
+        fileSize: fileBuffer.length,
+        orderId,
+        itemId,
+        trackingCode
       }, 'success');
       
     } catch (error) {
       detailedLog('labels', 'Error accessing label file', {
         error: error.message,
-        labelsDir
+        labelsDir,
+        trackingCode
       }, 'error');
       
       res.status(404).json({
@@ -712,7 +718,7 @@ app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (r
   }
 });
 
-// Legacy label download endpoint (for backward compatibility)
+// FIXED: Legacy label download endpoint (also fixed for backward compatibility)
 app.get('/api/labels/:orderId/:trackingCode', requireAuth, async (req, res) => {
   try {
     const { orderId, trackingCode } = req.params;
@@ -723,11 +729,10 @@ app.get('/api/labels/:orderId/:trackingCode', requireAuth, async (req, res) => {
     try {
       const files = await fs.readdir(labelsDir);
       
-      // Find the label file that matches the order and tracking code
+      // FIXED: Look for file that matches the tracking code
       const labelFile = files.find(file => 
-        file.includes(orderId) && 
-        file.includes(trackingCode) && 
-        file.endsWith('.pdf')
+        file === `${trackingCode}.pdf` || // Exact match first
+        (file.includes(trackingCode) && file.endsWith('.pdf')) // Fallback
       );
       
       if (!labelFile) {
@@ -761,6 +766,57 @@ app.get('/api/labels/:orderId/:trackingCode', requireAuth, async (req, res) => {
     
   } catch (error) {
     logActivity('labels', `Error downloading label: ${error.message}`, 'error');
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// NEW: Debug endpoint to list all available labels
+app.get('/api/debug/labels', requireAuth, async (req, res) => {
+  try {
+    const labelsDir = path.join(__dirname, 'uploads', 'labels');
+    
+    try {
+      const files = await fs.readdir(labelsDir);
+      const labelFiles = files.filter(f => f.endsWith('.pdf'));
+      
+      const fileDetails = await Promise.all(
+        labelFiles.map(async (file) => {
+          try {
+            const filePath = path.join(labelsDir, file);
+            const stats = await fs.stat(filePath);
+            return {
+              filename: file,
+              size: stats.size,
+              created: stats.birthtime,
+              trackingCode: file.replace('.pdf', '')
+            };
+          } catch (error) {
+            return {
+              filename: file,
+              error: error.message
+            };
+          }
+        })
+      );
+      
+      res.json({
+        success: true,
+        labelsDirectory: labelsDir,
+        totalFiles: labelFiles.length,
+        files: fileDetails
+      });
+      
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        message: 'Cannot access labels directory: ' + error.message
+      });
+    }
+    
+  } catch (error) {
     res.status(500).json({
       success: false,
       message: error.message
