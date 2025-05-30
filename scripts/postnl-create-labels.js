@@ -1,11 +1,8 @@
 // scripts/postnl-create-labels.js - Simplified PostNL label creation
-import axios from 'axios';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+require('dotenv').config();
+const axios = require('axios');
+const fs = require('fs').promises;
+const path = require('path');
 
 // PostNL API Configuration
 const POSTNL_CONFIG = {
@@ -239,7 +236,7 @@ async function saveLabelPDF(labelData, orderId, trackingCode) {
 }
 
 // Main export function
-export async function createLabels(shipments = null) {
+async function createLabels(shipments = null) {
   try {
     console.log('🚀 Starting PostNL label creation...');
     
@@ -400,3 +397,5 @@ export async function createLabels(shipments = null) {
     };
   }
 }
+
+module.exports = { createLabels };
