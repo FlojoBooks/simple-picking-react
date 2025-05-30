@@ -18,7 +18,8 @@
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-scripts": "5.0.1",
-    "lucide-react": "^0.263.1"
+    "lucide-react": "^0.263.1",
+    "exceljs": "^4.4.0"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"
@@ -44,7 +45,8 @@
     "picking",
     "shipping",
     "warehouse",
-    "api-integration"
+    "api-integration",
+    "price-updates"
   ],
   "author": "Your Name",
   "license": "MIT"
