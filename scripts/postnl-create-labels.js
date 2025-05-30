@@ -1,19 +1,19 @@
-// scripts/postnl-create-labels.js - Enhanced with detailed logging for debugging
+// scripts/postnl-create-labels.js - Fixed to match working standalone version
 require('dotenv').config();
 const axios = require('axios');
 const fs = require('fs').promises;
 const path = require('path');
 
-// PostNL API Configuration
+// PostNL API Configuration - matches your working script
 const POSTNL_CONFIG = {
   API_KEY: process.env.API_KEY,
-  API_URL: process.env.API_URL || 'https://api-sandbox.postnl.nl',
+  API_URL: process.env.API_URL || 'https://api.postnl.nl/shipment/v2_2/label?confirm=true', // Fixed to match working script
   CUSTOMER_NUMBER: process.env.CUSTOMER_NUMBER,
   CUSTOMER_CODE: process.env.CUSTOMER_CODE,
   COLLECTION_LOCATION: process.env.COLLECTION_LOCATION
 };
 
-// Sender information
+// Sender information - matches your working script structure
 const SENDER_INFO = {
   companyName: process.env.COMPANY_NAME || 'Your Company',
   firstName: '',
@@ -78,7 +78,7 @@ function validatePostNLConfig() {
   detailedLog('config', 'PostNL configuration validated successfully', null, 'success');
 }
 
-// Generate PostNL tracking code
+// Generate PostNL tracking code - matches your working script
 function generatePostNLTrackingCode() {
   const characters = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
   let trackingCode = '3S';
@@ -92,19 +92,67 @@ function generatePostNLTrackingCode() {
   return finalCode;
 }
 
-// Validate tracking code format
-function validateTrackingCode(trackingCode) {
-  const pattern = /^3S[0-9A-Z]{13}NL$/;
-  const isValid = pattern.test(trackingCode);
-  detailedLog('tracking', `Tracking code validation`, {
-    trackingCode,
-    pattern: pattern.toString(),
-    isValid
-  }, isValid ? 'success' : 'warning');
-  return isValid;
+// Build payload exactly like your working script
+function buildPayload(shipmentData) {
+  const weight = parseInt(shipmentData.weight) || parseInt(process.env.DEFAULT_WEIGHT) || 1000;
+  const messageId = shipmentData.messageId || `MSG_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+  const trackingCode = shipmentData.trackingCode || generatePostNLTrackingCode();
+
+  // Build contact object like your working script
+  const contact = { ContactType: '01' };
+  if (shipmentData.receiver.email) contact.Email = shipmentData.receiver.email;
+  if (shipmentData.receiver.sms) contact.SMSNr = shipmentData.receiver.sms;
+  if (shipmentData.receiver.phone) contact.TelNr = shipmentData.receiver.phone;
+
+  // Build payload exactly like your working script
+  return {
+    Customer: {
+      Address: {
+        AddressType: '02',
+        Street: SENDER_INFO.street,
+        HouseNr: SENDER_INFO.houseNumber,
+        HouseNrExt: SENDER_INFO.houseNumberExt,
+        Zipcode: SENDER_INFO.zipcode,
+        City: SENDER_INFO.city,
+        Countrycode: SENDER_INFO.countryCode,
+        CompanyName: SENDER_INFO.companyName
+      },
+      CollectionLocation: POSTNL_CONFIG.COLLECTION_LOCATION,
+      ContactPerson: SENDER_INFO.lastName,
+      CustomerCode: POSTNL_CONFIG.CUSTOMER_CODE,
+      CustomerNumber: POSTNL_CONFIG.CUSTOMER_NUMBER,
+      Email: SENDER_INFO.email,
+      Name: SENDER_INFO.lastName
+    },
+    Message: {
+      MessageID: messageId,
+      MessageTimeStamp: new Date().toISOString(),
+      Printertype: 'PDF'
+    },
+    Shipments: [
+      {
+        Addresses: [
+          {
+            AddressType: '01',
+            FirstName: shipmentData.receiver.firstName || 'Customer',
+            Name: shipmentData.receiver.lastName || 'Customer',
+            Street: shipmentData.receiver.street || 'Unknown Street',
+            HouseNr: shipmentData.receiver.houseNumber || '1',
+            HouseNrExt: shipmentData.receiver.houseNumberExt || '',
+            Zipcode: shipmentData.receiver.zipcode || '1000AA',
+            City: shipmentData.receiver.city || 'Amsterdam',
+            Countrycode: shipmentData.receiver.countryCode || 'NL'
+          }
+        ],
+        Contacts: [contact],
+        Dimension: { Weight: weight },
+        ProductCodeDelivery: shipmentData.productCode || '3085'
+      }
+    ]
+  };
 }
 
-// Create PostNL shipping label
+// Create PostNL shipping label - simplified to match your working script
 async function createPostNLLabel(shipmentData) {
   const startTime = Date.now();
   
@@ -118,95 +166,19 @@ async function createPostNLLabel(shipmentData) {
       throw new Error('Receiver information is required');
     }
     
-    const apiUrl = `${POSTNL_CONFIG.API_URL}/shipment/v2_2/label`;
-    const messageId = shipmentData.messageId || `MSG_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const trackingCode = shipmentData.trackingCode || generatePostNLTrackingCode();
+    // Build payload using your working script structure
+    const payload = buildPayload(shipmentData);
     
-    if (!validateTrackingCode(trackingCode)) {
-      detailedLog('label-creation', `Invalid tracking code format: ${trackingCode}`, null, 'warning');
-    }
-
-    // Prepare delivery date (tomorrow by default)
-    const deliveryDate = shipmentData.deliveryDate || new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-    
-    detailedLog('label-creation', 'Prepared label request parameters', {
-      apiUrl,
-      messageId,
-      trackingCode,
-      deliveryDate,
-      productCode: shipmentData.productCode || '3085',
-      weight: parseInt(shipmentData.weight) || parseInt(process.env.DEFAULT_WEIGHT) || 1000
-    }, 'debug');
-    
-    // Build the label payload
-    const labelPayload = {
-      Customer: {
-        CustomerNumber: POSTNL_CONFIG.CUSTOMER_NUMBER,
-        CustomerCode: POSTNL_CONFIG.CUSTOMER_CODE,
-        CollectionLocation: POSTNL_CONFIG.COLLECTION_LOCATION
-      },
-      Message: {
-        MessageID: messageId,
-        MessageTimeStamp: new Date().toISOString(),
-        Printertype: 'GraphicFile|PDF'
-      },
-      Shipments: [{
-        Addresses: [
-          {
-            AddressType: '01', // Sender
-            CompanyName: SENDER_INFO.companyName,
-            FirstName: SENDER_INFO.firstName,
-            Name: SENDER_INFO.lastName,
-            Street: SENDER_INFO.street,
-            HouseNr: SENDER_INFO.houseNumber,
-            HouseNrExt: SENDER_INFO.houseNumberExt,
-            Zipcode: SENDER_INFO.zipcode,
-            City: SENDER_INFO.city,
-            Countrycode: SENDER_INFO.countryCode,
-            Email: SENDER_INFO.email
-          },
-          {
-            AddressType: '02', // Receiver
-            CompanyName: shipmentData.receiver.companyName || '',
-            FirstName: shipmentData.receiver.firstName || '',
-            Name: shipmentData.receiver.lastName || 'Receiver',
-            Street: shipmentData.receiver.street || '',
-            HouseNr: shipmentData.receiver.houseNumber || '1',
-            HouseNrExt: shipmentData.receiver.houseNumberExt || '',
-            Zipcode: shipmentData.receiver.zipcode || '1000AA',
-            City: shipmentData.receiver.city || 'Amsterdam',
-            Countrycode: shipmentData.receiver.countryCode || 'NL',
-            Email: shipmentData.receiver.email || ''
-          }
-        ],
-        ProductCodeDelivery: shipmentData.productCode || '3085',
-        PhaseCode: '1',
-        Reference: shipmentData.reference || trackingCode,
-        DeliveryDate: deliveryDate,
-        Barcode: trackingCode,
-        Dimension: {
-          Weight: parseInt(shipmentData.weight) || parseInt(process.env.DEFAULT_WEIGHT) || 1000
-        },
-        ProductOptions: [
-          {
-            Option: '01',
-            Characteristic: shipmentData.productCode === '2928' ? '006' : '118'
-          }
-        ]
-      }]
-    };
-
-    detailedLog('label-creation', `Prepared PostNL API payload`, {
-      customer: labelPayload.Customer,
-      message: labelPayload.Message,
-      shipmentAddresses: labelPayload.Shipments[0].Addresses,
-      productCode: labelPayload.Shipments[0].ProductCodeDelivery,
-      weight: labelPayload.Shipments[0].Dimension.Weight,
-      productOptions: labelPayload.Shipments[0].ProductOptions
+    detailedLog('label-creation', 'Prepared PostNL API payload', {
+      customer: payload.Customer,
+      message: payload.Message,
+      shipmentAddresses: payload.Shipments[0].Addresses,
+      productCode: payload.Shipments[0].ProductCodeDelivery,
+      weight: payload.Shipments[0].Dimension.Weight
     }, 'debug');
 
     detailedLog('label-creation', `Making API call to PostNL`, {
-      url: apiUrl,
+      url: POSTNL_CONFIG.API_URL,
       method: 'POST',
       hasApiKey: !!POSTNL_CONFIG.API_KEY,
       apiKeyLength: POSTNL_CONFIG.API_KEY ? POSTNL_CONFIG.API_KEY.length : 0,
@@ -214,11 +186,12 @@ async function createPostNLLabel(shipmentData) {
       receiverAddress: `${shipmentData.receiver.street} ${shipmentData.receiver.houseNumber}, ${shipmentData.receiver.zipcode} ${shipmentData.receiver.city}`
     }, 'info');
 
-    const response = await axios.post(apiUrl, labelPayload, {
+    // Use exact same headers as your working script
+    const response = await axios.post(POSTNL_CONFIG.API_URL, payload, {
       headers: {
-        'Content-Type': 'application/json',
-        'Accept': 'application/json',
-        'apikey': POSTNL_CONFIG.API_KEY
+        apikey: POSTNL_CONFIG.API_KEY,  // Exactly like your working script
+        Accept: 'application/json',
+        'Content-Type': 'application/json'
       },
       timeout: 30000
     });
@@ -232,30 +205,8 @@ async function createPostNLLabel(shipmentData) {
       duration: `${duration}ms`
     }, 'success');
     
-    // Log response structure for debugging
-    if (response.data) {
-      detailedLog('api-response', 'PostNL API response structure', {
-        hasLabels: !!(response.data.Labels),
-        labelsCount: response.data.Labels ? response.data.Labels.length : 0,
-        hasResponseShipments: !!(response.data.ResponseShipments),
-        responseShipmentsCount: response.data.ResponseShipments ? response.data.ResponseShipments.length : 0,
-        firstLabelKeys: response.data.Labels && response.data.Labels.length > 0 ? Object.keys(response.data.Labels[0]) : [],
-        responseDataKeys: Object.keys(response.data)
-      }, 'debug');
-      
-      if (response.data.Labels && response.data.Labels.length > 0) {
-        const firstLabel = response.data.Labels[0];
-        detailedLog('api-response', 'First label details', {
-          hasContent: !!firstLabel.Content,
-          contentLength: firstLabel.Content ? firstLabel.Content.length : 0,
-          contentType: firstLabel.Contenttype,
-          labeltype: firstLabel.Labeltype
-        }, 'debug');
-      }
-    }
-    
-    // Extract final tracking code from response
-    let finalTrackingCode = trackingCode;
+    // Extract tracking code from response exactly like your working script
+    let finalTrackingCode = payload.Message.MessageID;
     if (response.data.ResponseShipments && response.data.ResponseShipments.length > 0) {
       const responseShipment = response.data.ResponseShipments[0];
       if (responseShipment.Barcode) {
@@ -267,7 +218,7 @@ async function createPostNLLabel(shipmentData) {
     return {
       ...response.data,
       trackingCode: finalTrackingCode,
-      messageId: messageId,
+      messageId: payload.Message.MessageID,
       success: true
     };
 
@@ -315,24 +266,30 @@ async function createPostNLLabel(shipmentData) {
   }
 }
 
-// Save label PDF
+// Save label PDF exactly like your working script
 async function saveLabelPDF(labelData, orderId, trackingCode) {
   try {
     detailedLog('pdf-save', 'Starting PDF save process', {
       orderId,
       trackingCode,
-      hasLabels: !!(labelData.Labels),
-      labelsCount: labelData.Labels ? labelData.Labels.length : 0
+      hasResponseShipments: !!(labelData.ResponseShipments),
+      responseShipmentsCount: labelData.ResponseShipments ? labelData.ResponseShipments.length : 0
     }, 'debug');
     
-    if (!labelData.Labels || labelData.Labels.length === 0) {
-      detailedLog('pdf-save', 'No label data found in response', { labelData }, 'warning');
+    if (!labelData.ResponseShipments || labelData.ResponseShipments.length === 0) {
+      detailedLog('pdf-save', 'No response shipments found', { labelData }, 'warning');
       return null;
     }
     
-    const label = labelData.Labels[0];
+    const responseShipment = labelData.ResponseShipments[0];
+    if (!responseShipment.Labels || responseShipment.Labels.length === 0) {
+      detailedLog('pdf-save', 'No labels found in response shipment', { responseShipment }, 'warning');
+      return null;
+    }
+    
+    const label = responseShipment.Labels[0];
     if (!label.Content) {
-      detailedLog('pdf-save', 'No label content found in response', { label }, 'warning');
+      detailedLog('pdf-save', 'No label content found', { label }, 'warning');
       return null;
     }
     
@@ -342,16 +299,14 @@ async function saveLabelPDF(labelData, orderId, trackingCode) {
     // The label content is base64 encoded PDF
     const pdfBuffer = Buffer.from(label.Content, 'base64');
     
-    // Create filename
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').split('T')[0];
-    const filename = `label_${orderId}_${trackingCode}_${timestamp}.pdf`;
+    // Create filename exactly like your working script
+    const filename = `${trackingCode}.pdf`;
     const filePath = path.join(LABELS_DIR, filename);
     
     detailedLog('pdf-save', 'Writing PDF file', {
       filename,
       filePath,
-      bufferSize: pdfBuffer.length,
-      timestamp
+      bufferSize: pdfBuffer.length
     }, 'debug');
     
     await fs.writeFile(filePath, pdfBuffer);
@@ -432,15 +387,12 @@ async function createLabels(shipments = null) {
             throw new Error('Order ID is required');
           }
           
-          // Prepare shipment data
+          // Prepare shipment data exactly like your working script expects
           const messageId = `MSG_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-          const trackingCode = generatePostNLTrackingCode();
           
           const shipmentData = {
             messageId: messageId,
-            trackingCode: trackingCode,
             receiver: {
-              companyName: shipment.companyName || '',
               firstName: shipment.firstName || 'Customer',
               lastName: shipment.lastName || 'Customer',
               street: shipment.street || 'Unknown Street',
@@ -449,17 +401,18 @@ async function createLabels(shipments = null) {
               zipcode: shipment.zipcode || '1000AA',
               city: shipment.city || 'Amsterdam',
               countryCode: shipment.countryCode || 'NL',
-              email: shipment.email || ''
+              email: shipment.email || '',
+              sms: shipment.sms || '',
+              phone: shipment.phone || ''
             },
             productCode: shipment.productCode || '3085',
-            reference: shipment.orderId || trackingCode,
+            reference: shipment.orderId,
             weight: parseInt(shipment.weight) || 1000
           };
 
           detailedLog('shipment-process', 'Prepared shipment data for API call', {
             shipmentData,
-            messageId,
-            trackingCode
+            messageId
           }, 'debug');
 
           // Create the label via PostNL API
@@ -469,8 +422,8 @@ async function createLabels(shipments = null) {
             throw new Error('PostNL API returned error response');
           }
           
-          // Save PDF label
-          const labelPath = await saveLabelPDF(result, shipment.orderId, result.trackingCode || trackingCode);
+          // Save PDF label using the same structure as your working script
+          const labelPath = await saveLabelPDF(result, shipment.orderId, result.trackingCode);
           const labelFilename = labelPath ? path.basename(labelPath) : null;
           
           // Get file size if label was saved
@@ -489,7 +442,7 @@ async function createLabels(shipments = null) {
             orderId: shipment.orderId,
             orderItemId: shipment.orderItemId,
             messageId: messageId,
-            trackAndTrace: result.trackingCode || trackingCode,
+            trackAndTrace: result.trackingCode,
             labelPath: labelPath,
             labelFilename: labelFilename,
             status: 'created',
@@ -498,9 +451,9 @@ async function createLabels(shipments = null) {
             address: `${shipment.street || ''} ${shipment.houseNumber || ''}, ${shipment.zipcode || ''} ${shipment.city || ''}`,
             productCode: shipmentData.productCode,
             weight: shipmentData.weight,
-            printed: false, // Simplified - no printing integration
+            printed: false,
             printMessage: 'Label created successfully',
-            trackingUrl: `https://postnl.nl/tracktrace/?B=${result.trackingCode || trackingCode}`,
+            trackingUrl: `https://postnl.nl/tracktrace/?B=${result.trackingCode}`,
             
             // Enhanced metadata
             apiResponse: {
@@ -513,7 +466,7 @@ async function createLabels(shipments = null) {
           
           successCount++;
           detailedLog('shipment-process', `Label created successfully for order ${shipment.orderId}`, {
-            trackingCode: result.trackingCode || trackingCode,
+            trackingCode: result.trackingCode,
             labelFilename,
             fileSize
           }, 'success');
