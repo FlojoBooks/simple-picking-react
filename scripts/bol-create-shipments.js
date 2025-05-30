@@ -1,7 +1,13 @@
 // scripts/bol-create-shipments.js - Simplified BOL.com shipment creation
+require('dotenv').config();
 const axios = require('axios');
 
-const { CLIENT_ID, CLIENT_SECRET } = process.env;
+// Access environment variables directly
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+
+console.log(`🔍 BOL Shipments - CLIENT_ID: ${CLIENT_ID ? 'loaded' : 'missing'}`);
+console.log(`🔍 BOL Shipments - CLIENT_SECRET: ${CLIENT_SECRET ? 'loaded' : 'missing'}`);
 
 // PostNL configuration for BOL.com API (PostNL uses TNT transporter code in BOL)
 const POSTNL_CONFIG = {
