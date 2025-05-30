@@ -1,7 +1,13 @@
 // scripts/bol-picking-list.js - Simplified picking list generation
-import axios from 'axios';
+require('dotenv').config();
+const axios = require('axios');
 
-const { CLIENT_ID, CLIENT_SECRET } = process.env;
+// Access environment variables directly
+const CLIENT_ID = process.env.CLIENT_ID;
+const CLIENT_SECRET = process.env.CLIENT_SECRET;
+
+console.log(`🔍 BOL Picking List - CLIENT_ID: ${CLIENT_ID ? 'loaded' : 'missing'}`);
+console.log(`🔍 BOL Picking List - CLIENT_SECRET: ${CLIENT_SECRET ? 'loaded' : 'missing'}`);
 
 let token = null;
 let tokenTimestamp = 0;
@@ -126,7 +132,7 @@ function generateLocation(product) {
 }
 
 // Main picking list generation function
-export async function generatePickingList() {
+async function generatePickingList() {
   const startTime = Date.now();
   
   try {
@@ -278,7 +284,7 @@ export async function generatePickingList() {
 }
 
 // Update picking status
-export function updatePickingStatus(pickingList, orderId, itemId, picked = true, location = '') {
+function updatePickingStatus(pickingList, orderId, itemId, picked = true, location = '') {
   const item = pickingList.find(item => 
     item.MessageID === orderId && 
     (item.OrderItemID === itemId || item.EAN === itemId)
@@ -299,7 +305,7 @@ export function updatePickingStatus(pickingList, orderId, itemId, picked = true,
 }
 
 // Get picking statistics
-export function getPickingStats(pickingList) {
+function getPickingStats(pickingList) {
   if (!pickingList || pickingList.length === 0) {
     return {
       total: 0,
@@ -321,3 +327,9 @@ export function getPickingStats(pickingList) {
     pickRate
   };
 }
+
+module.exports = { 
+  generatePickingList, 
+  updatePickingStatus, 
+  getPickingStats 
+};
