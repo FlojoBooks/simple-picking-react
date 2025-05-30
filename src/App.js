@@ -1,6 +1,6 @@
 // src/App.js - Main React application component
 import React, { useState, useEffect } from 'react';
-import { Package, Truck, CheckCircle, Clock, User, LogOut, RefreshCw, MapPin, Download, FileText } from 'lucide-react';
+import { Package, Truck, CheckCircle, Clock, User, LogOut, RefreshCw, MapPin } from 'lucide-react';
 
 const App = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -468,11 +468,10 @@ const App = () => {
                             {order.labelFilename && (
                               <button
                                 onClick={() => downloadLabel(order.id, order.trackingNumber)}
-                                className="ml-2 flex items-center gap-1 text-green-600 hover:text-green-800 text-sm"
+                                className="ml-2 px-2 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700"
                                 title="Download shipping label"
                               >
-                                <FileText className="w-4 h-4" />
-                                <Download className="w-3 h-3" />
+                                Download Label
                               </button>
                             )}
                           </div>
