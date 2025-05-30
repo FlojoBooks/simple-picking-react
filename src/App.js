@@ -1,6 +1,6 @@
 // src/App.js - Main React application component
 import React, { useState, useEffect } from 'react';
-import { Package, Truck, CheckCircle, Clock, User, LogOut, RefreshCw, MapPin } from 'lucide-react';
+import { Package, Truck, CheckCircle, Clock, User, LogOut, RefreshCw, MapPin, Download, FileText } from 'lucide-react';
 
 const App = () => {
   const [isLoggedIn, setIsLoggedIn] = useState(false);
@@ -10,6 +10,8 @@ const App = () => {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [sessionId, setSessionId] = useState('');
+  const [showProductCodeModal, setShowProductCodeModal] = useState(false);
+  const [selectedItem, setSelectedItem] = useState(null);
 
   // Load orders from API
   useEffect(() => {
@@ -114,14 +116,15 @@ const App = () => {
     }
   };
 
-  const markItemPicked = async (orderId, itemId) => {
+  const markItemPicked = async (orderId, itemId, productCode = '3085') => {
     try {
       const response = await fetch(`/api/orders/${orderId}/items/${itemId}/pick`, {
         method: 'POST',
         headers: {
           'x-session-id': sessionId,
           'Content-Type': 'application/json'
-        }
+        },
+        body: JSON.stringify({ productCode })
       });
       
       const result = await response.json();
@@ -131,7 +134,7 @@ const App = () => {
         setOrders(orders.map(order => {
           if (order.id === orderId) {
             const updatedItems = order.items.map(item => 
-              item.id === itemId ? { ...item, picked: true } : item
+              item.id === itemId ? { ...item, picked: true, productCode } : item
             );
             const allPicked = updatedItems.every(item => item.picked);
             return {
@@ -143,7 +146,8 @@ const App = () => {
           return order;
         }));
         
-        setMessage('Item marked as picked!');
+        const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
+        setMessage(`Item picked as ${packageType}!`);
         setTimeout(() => setMessage(''), 3000);
       } else {
         setMessage('Failed to mark item as picked: ' + result.message);
@@ -151,6 +155,19 @@ const App = () => {
     } catch (error) {
       setMessage('Error marking item as picked: ' + error.message);
     }
+  };
+
+  const handlePickItemClick = (orderId, itemId) => {
+    setSelectedItem({ orderId, itemId });
+    setShowProductCodeModal(true);
+  };
+
+  const handleProductCodeSelect = (productCode) => {
+    if (selectedItem) {
+      markItemPicked(selectedItem.orderId, selectedItem.itemId, productCode);
+    }
+    setShowProductCodeModal(false);
+    setSelectedItem(null);
   };
 
   const shipOrder = async (orderId) => {
@@ -170,11 +187,18 @@ const App = () => {
       
       if (result.success) {
         const trackingNumber = result.trackingNumber;
+        const labelFilename = result.labelFilename;
         
         // Update local state
         setOrders(orders.map(order => 
           order.id === orderId 
-            ? { ...order, shipped: true, trackingNumber, status: 'shipped' }
+            ? { 
+                ...order, 
+                shipped: true, 
+                trackingNumber, 
+                status: 'shipped',
+                labelFilename: labelFilename
+              }
             : order
         ));
         
@@ -186,6 +210,34 @@ const App = () => {
       setMessage('Error shipping order: ' + error.message);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const downloadLabel = async (orderId, trackingNumber) => {
+    try {
+      const response = await fetch(`/api/labels/${orderId}/${trackingNumber}`, {
+        headers: {
+          'x-session-id': sessionId
+        }
+      });
+      
+      if (response.ok) {
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.style.display = 'none';
+        a.href = url;
+        a.download = `label_${orderId}_${trackingNumber}.pdf`;
+        document.body.appendChild(a);
+        a.click();
+        window.URL.revokeObjectURL(url);
+        setMessage('Label downloaded successfully!');
+        setTimeout(() => setMessage(''), 3000);
+      } else {
+        setMessage('Failed to download label');
+      }
+    } catch (error) {
+      setMessage('Error downloading label: ' + error.message);
     }
   };
 
@@ -320,7 +372,7 @@ const App = () => {
         {/* Status Message */}
         {message && (
           <div className={`mb-6 p-4 rounded-md ${
-            message.includes('success') || message.includes('shipped') || message.includes('picked')
+            message.includes('success') || message.includes('shipped') || message.includes('picked') || message.includes('downloaded')
               ? 'bg-green-100 text-green-700' 
               : message.includes('Invalid')
               ? 'bg-red-100 text-red-700'
@@ -409,9 +461,21 @@ const App = () => {
                       
                       {order.trackingNumber && (
                         <div className="mt-2 p-2 bg-green-50 rounded-md">
-                          <p className="text-sm text-green-700">
-                            <strong>Tracking:</strong> {order.trackingNumber}
-                          </p>
+                          <div className="flex items-center justify-between">
+                            <p className="text-sm text-green-700">
+                              <strong>Tracking:</strong> {order.trackingNumber}
+                            </p>
+                            {order.labelFilename && (
+                              <button
+                                onClick={() => downloadLabel(order.id, order.trackingNumber)}
+                                className="ml-2 flex items-center gap-1 text-green-600 hover:text-green-800 text-sm"
+                                title="Download shipping label"
+                              >
+                                <FileText className="w-4 h-4" />
+                                <Download className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
                         </div>
                       )}
                     </div>
@@ -444,7 +508,7 @@ const App = () => {
                         
                         {!order.shipped && (
                           <button
-                            onClick={() => markItemPicked(order.id, item.id)}
+                            onClick={() => handlePickItemClick(order.id, item.id)}
                             disabled={item.picked}
                             className={`px-3 py-1 rounded text-sm font-medium ${
                               item.picked
@@ -456,6 +520,11 @@ const App = () => {
                               <span className="flex items-center gap-1">
                                 <CheckCircle className="w-4 h-4" />
                                 Picked
+                                {item.productCode && (
+                                  <span className="ml-1 text-xs">
+                                    ({item.productCode === '2928' ? 'Mailbox' : 'Normal'})
+                                  </span>
+                                )}
                               </span>
                             ) : (
                               'Pick Item'
@@ -493,6 +562,44 @@ const App = () => {
           )}
         </div>
       </main>
+
+      {/* Product Code Selection Modal */}
+      {showProductCodeModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Package Type</h3>
+            <p className="text-gray-600 mb-6">Choose the appropriate package type for shipping:</p>
+            
+            <div className="space-y-3">
+              <button
+                onClick={() => handleProductCodeSelect('3085')}
+                className="w-full p-4 text-left border border-gray-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors"
+              >
+                <div className="font-medium text-gray-900">Normal Package (3085)</div>
+                <div className="text-sm text-gray-600">Standard package delivery</div>
+              </button>
+              
+              <button
+                onClick={() => handleProductCodeSelect('2928')}
+                className="w-full p-4 text-left border border-gray-300 rounded-lg hover:border-blue-500 hover:bg-blue-50 transition-colors"
+              >
+                <div className="font-medium text-gray-900">Mailbox Package (2928)</div>
+                <div className="text-sm text-gray-600">Fits through mailbox</div>
+              </button>
+            </div>
+            
+            <button
+              onClick={() => {
+                setShowProductCodeModal(false);
+                setSelectedItem(null);
+              }}
+              className="w-full mt-4 px-4 py-2 text-gray-600 border border-gray-300 rounded-md hover:bg-gray-50"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
