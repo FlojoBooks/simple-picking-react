@@ -1,4 +1,5 @@
 // server.js - Simple Express server with BOL.com and PostNL API integration
+// Updated for immediate label creation on item pick
 require('dotenv').config();
 
 const express = require('express');
@@ -227,7 +228,7 @@ app.post('/api/fetch-orders', requireAuth, async (req, res) => {
   }
 });
 
-// Get current orders and picking list
+// Updated orders API to include label info per item
 app.get('/api/orders', requireAuth, (req, res) => {
   // Convert picking list to order format for frontend
   const orderMap = new Map();
@@ -244,8 +245,8 @@ app.get('/api/orders', requireAuth, (req, res) => {
         items: [],
         status: 'open',
         shipped: false,
-        trackingNumber: null,
-        labelFilename: null
+        trackingNumbers: [],
+        allItemsShipped: false
       });
     }
     
@@ -257,7 +258,10 @@ app.get('/api/orders', requireAuth, (req, res) => {
       quantity: item.quantity || 1,
       location: item.location || 'Unknown',
       picked: item.picked || false,
-      productCode: item.productCode || null // Include product code
+      productCode: item.productCode || null,
+      trackingNumber: item.trackingNumber || null,
+      labelFilename: item.labelFilename || null,
+      labelCreated: item.labelCreated || false
     });
     
     // Update order status based on items
@@ -268,16 +272,23 @@ app.get('/api/orders', requireAuth, (req, res) => {
       order.status = 'picking';
     }
     
-    // Update tracking and label info if shipped
-    if (item.shipped && item.trackingNumber) {
-      order.shipped = true;
-      order.trackingNumber = item.trackingNumber;
-      order.status = 'shipped';
+    // Update shipping status
+    if (item.shipped) {
+      order.allItemsShipped = orderMap.get(orderId).items.every(orderItem => {
+        const pickingItem = currentPickingList.find(pi => 
+          pi.MessageID === orderId && pi.OrderItemID === orderItem.id
+        );
+        return pickingItem?.shipped || false;
+      });
       
-      // Generate expected label filename
-      if (item.trackingNumber) {
-        const date = new Date(item.shippedAt || Date.now()).toISOString().split('T')[0];
-        order.labelFilename = `label_${orderId}_${item.trackingNumber}_${date}.pdf`;
+      if (order.allItemsShipped) {
+        order.shipped = true;
+        order.status = 'shipped';
+      }
+      
+      // Collect tracking numbers
+      if (item.trackingNumber && !order.trackingNumbers.includes(item.trackingNumber)) {
+        order.trackingNumbers.push(item.trackingNumber);
       }
     }
   });
@@ -291,55 +302,15 @@ app.get('/api/orders', requireAuth, (req, res) => {
   });
 });
 
-// Mark item as picked with product code
+// Mark item as picked with immediate label creation
 app.post('/api/orders/:orderId/items/:itemId/pick', requireAuth, async (req, res) => {
   try {
     const { orderId, itemId } = req.params;
     const { productCode = '3085' } = req.body;
     
-    // Update picking list
-    const item = currentPickingList.find(item => 
-      item.MessageID === orderId && 
-      (item.OrderItemID === itemId || item.EAN === itemId)
-    );
+    logActivity('picking', `Starting pick process for item ${itemId} in order ${orderId}`, 'info');
     
-    if (item) {
-      item.picked = true;
-      item.pickTimestamp = new Date().toISOString();
-      item.productCode = productCode; // Store the selected product code
-      
-      await saveData();
-      
-      const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
-      logActivity('picking', `Item picked: ${item.ProductTitle} for order ${orderId} as ${packageType}`, 'success');
-      
-      res.json({
-        success: true,
-        message: `Item marked as picked (${packageType})`
-      });
-    } else {
-      res.status(404).json({
-        success: false,
-        message: 'Item not found'
-      });
-    }
-  } catch (error) {
-    logActivity('picking', `Error picking item: ${error.message}`, 'error');
-    res.status(500).json({
-      success: false,
-      message: error.message
-    });
-  }
-});
-
-// Ship order - Create PostNL label and BOL shipment
-app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
-  try {
-    const { orderId } = req.params;
-    
-    logActivity('shipping', `Starting shipment creation for order ${orderId}`, 'info');
-    
-    // Check PostNL configuration
+    // Check PostNL configuration first
     const requiredPostNLVars = [
       'API_KEY', 'API_URL', 'CUSTOMER_CODE', 'CUSTOMER_NUMBER', 'COLLECTION_LOCATION',
       'SENDER_NAME', 'SENDER_EMAIL', 'COMPANY_NAME', 'COMPANY_STREET', 'COMPANY_HOUSENR',
@@ -352,6 +323,97 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
       return res.status(400).json({
         success: false,
         message: `PostNL configuration incomplete. Missing: ${missingVars.join(', ')}`
+      });
+    }
+    
+    // Find the item in picking list
+    const item = currentPickingList.find(item => 
+      item.MessageID === orderId && 
+      (item.OrderItemID === itemId || item.EAN === itemId)
+    );
+    
+    if (!item) {
+      return res.status(404).json({
+        success: false,
+        message: 'Item not found'
+      });
+    }
+    
+    // Prepare shipment data for PostNL label creation
+    const shipmentData = [{
+      orderId: `${orderId}_${itemId}`, // Unique ID for this item
+      orderItemId: itemId,
+      firstName: item.FirstName || 'Customer',
+      lastName: item.LastName || 'Customer',
+      street: item.ShipStreet || 'Unknown Street',
+      houseNumber: item.ShipHouseNr || '1',
+      houseNumberExt: item.ShipHouseNrExt || '',
+      zipcode: item.ShipZipcode || '1000AA',
+      city: item.ShipCity || 'Amsterdam',
+      email: item.ReceiverEmail || '',
+      productCode: productCode,
+      weight: 1000 // Default weight
+    }];
+    
+    logActivity('picking', `Creating PostNL label for item ${item.ProductTitle} as ${productCode === '2928' ? 'mailbox package' : 'normal package'}`, 'info');
+    
+    // Create PostNL label immediately
+    const labelResult = await createLabels(shipmentData);
+    
+    if (!labelResult.success || !labelResult.labels || labelResult.labels.length === 0) {
+      logActivity('picking', `PostNL label creation failed: ${labelResult.message}`, 'error');
+      return res.status(500).json({
+        success: false,
+        message: `Failed to create shipping label: ${labelResult.message}`
+      });
+    }
+    
+    const label = labelResult.labels[0];
+    const trackingNumber = label.trackAndTrace;
+    const labelFilename = label.labelFilename;
+    
+    // Update the item with pick status, product code, and label info
+    item.picked = true;
+    item.pickTimestamp = new Date().toISOString();
+    item.productCode = productCode;
+    item.trackingNumber = trackingNumber;
+    item.labelFilename = labelFilename;
+    item.labelCreated = true;
+    item.labelCreatedAt = new Date().toISOString();
+    
+    await saveData();
+    
+    const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
+    logActivity('picking', `Item picked and label created: ${item.ProductTitle} for order ${orderId} as ${packageType} with tracking ${trackingNumber}`, 'success');
+    
+    res.json({
+      success: true,
+      message: `Item picked as ${packageType} and label created!`,
+      trackingNumber: trackingNumber,
+      labelFilename: labelFilename
+    });
+    
+  } catch (error) {
+    logActivity('picking', `Error in pick process: ${error.message}`, 'error');
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Updated ship order - Only register with BOL.com (labels already created)
+app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    
+    logActivity('shipping', `Starting BOL.com shipment registration for order ${orderId}`, 'info');
+    
+    // Check if BOL credentials are configured
+    if (!process.env.CLIENT_ID || !process.env.CLIENT_SECRET) {
+      return res.status(400).json({
+        success: false,
+        message: 'BOL.com API credentials not configured. Please set CLIENT_ID and CLIENT_SECRET environment variables.'
       });
     }
     
@@ -374,88 +436,64 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
       });
     }
     
-    // Prepare shipment data for PostNL
-    const firstItem = orderItems[0];
-    
-    // Use the product code from the first picked item, or default to normal package
-    const productCode = firstItem.productCode || '3085';
-    
-    const shipmentData = [{
-      orderId: orderId,
-      firstName: firstItem.FirstName || 'Customer',
-      lastName: firstItem.LastName || 'Customer',
-      street: firstItem.ShipStreet || 'Unknown Street',
-      houseNumber: firstItem.ShipHouseNr || '1',
-      zipcode: firstItem.ShipZipcode || '1000AA',
-      city: firstItem.ShipCity || 'Amsterdam',
-      email: firstItem.ReceiverEmail || '',
-      productCode: productCode, // Use the selected product code
-      weight: 1000 // Default weight
-    }];
-    
-    // Create PostNL label
-    const labelResult = await createLabels(shipmentData);
-    
-    if (!labelResult.success || !labelResult.labels || labelResult.labels.length === 0) {
-      logActivity('shipping', `PostNL label creation failed: ${labelResult.message}`, 'error');
-      return res.status(500).json({
+    // Check if all items have labels created
+    const itemsWithoutLabels = orderItems.filter(item => !item.trackingNumber);
+    if (itemsWithoutLabels.length > 0) {
+      return res.status(400).json({
         success: false,
-        message: `Failed to create shipping label: ${labelResult.message}`
+        message: `Cannot ship order. ${itemsWithoutLabels.length} items don't have labels created.`
       });
     }
     
-    const label = labelResult.labels[0];
-    const trackingNumber = label.trackAndTrace;
-    const labelFilename = label.labelFilename;
-    
-    // Prepare order items for BOL shipment creation
+    // Prepare order items for BOL shipment creation (using existing tracking numbers)
     const bolOrderItems = orderItems.map(item => ({
       orderItemId: item.OrderItemID,
       orderId: orderId,
-      trackAndTrace: trackingNumber
+      trackAndTrace: item.trackingNumber, // Use the tracking number from label creation
+      firstName: item.FirstName,
+      lastName: item.LastName
     }));
     
-    // Create BOL.com shipment
+    logActivity('shipping', `Registering ${bolOrderItems.length} items with BOL.com`, 'info');
+    
+    // Create BOL.com shipment using existing tracking numbers
     const shipmentResult = await createShipments(bolOrderItems);
     
     if (shipmentResult.success) {
       // Update picking list items as shipped
       orderItems.forEach(item => {
         item.shipped = true;
-        item.trackingNumber = trackingNumber;
         item.shippedAt = new Date().toISOString();
+        item.bolShipmentRegistered = true;
       });
       
       await saveData();
       
-      const packageType = productCode === '2928' ? 'mailbox package' : 'normal package';
-      logActivity('shipping', `Order ${orderId} shipped successfully with tracking ${trackingNumber} as ${packageType}`, 'success');
+      // Collect all tracking numbers for response
+      const trackingNumbers = orderItems.map(item => item.trackingNumber);
+      const uniqueTrackingNumbers = [...new Set(trackingNumbers)];
+      
+      logActivity('shipping', `Order ${orderId} shipped successfully. Registered ${uniqueTrackingNumbers.length} tracking numbers with BOL.com`, 'success');
       
       res.json({
         success: true,
-        trackingNumber: trackingNumber,
-        labelFilename: labelFilename,
-        message: `Order shipped successfully! Tracking: ${trackingNumber}`,
-        labelCreated: labelResult.labelsCreated > 0,
-        labelPrinted: label.printed || false
+        trackingNumbers: uniqueTrackingNumbers,
+        itemCount: orderItems.length,
+        message: `Order shipped successfully! ${uniqueTrackingNumbers.length} labels already created and registered with BOL.com`,
+        labelCreated: true,
+        bolShipmentRegistered: true
       });
     } else {
-      logActivity('shipping', `BOL shipment creation failed: ${shipmentResult.message}`, 'warning');
+      logActivity('shipping', `BOL shipment registration failed: ${shipmentResult.message}`, 'error');
       
-      // Label was created but BOL shipment failed
-      res.json({
-        success: true,
-        trackingNumber: trackingNumber,
-        labelFilename: labelFilename,
-        message: `Label created with tracking ${trackingNumber}, but BOL shipment registration failed: ${shipmentResult.message}`,
-        labelCreated: true,
-        labelPrinted: label.printed || false,
-        bolShipmentFailed: true
+      res.status(500).json({
+        success: false,
+        message: `Failed to register shipment with BOL.com: ${shipmentResult.message}. Labels were already created successfully.`
       });
     }
     
   } catch (error) {
-    logActivity('shipping', `Shipping error: ${error.message}`, 'error');
+    logActivity('shipping', `BOL.com registration error: ${error.message}`, 'error');
     res.status(500).json({
       success: false,
       message: error.message
@@ -463,7 +501,63 @@ app.post('/api/orders/:orderId/ship', requireAuth, async (req, res) => {
   }
 });
 
-// Download shipping label PDF
+// Download individual item label
+app.get('/api/labels/item/:orderId/:itemId/:trackingCode', requireAuth, async (req, res) => {
+  try {
+    const { orderId, itemId, trackingCode } = req.params;
+    
+    // Look for label file in uploads/labels directory
+    const labelsDir = path.join(__dirname, 'uploads', 'labels');
+    
+    try {
+      const files = await fs.readdir(labelsDir);
+      
+      // Find the label file that matches the order, item and tracking code
+      const labelFile = files.find(file => 
+        file.includes(`${orderId}_${itemId}`) && 
+        file.includes(trackingCode) && 
+        file.endsWith('.pdf')
+      );
+      
+      if (!labelFile) {
+        return res.status(404).json({
+          success: false,
+          message: 'Label file not found'
+        });
+      }
+      
+      const labelPath = path.join(labelsDir, labelFile);
+      
+      // Check if file exists
+      await fs.access(labelPath);
+      
+      // Set appropriate headers for PDF download
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${labelFile}"`);
+      
+      // Stream the file
+      const fileBuffer = await fs.readFile(labelPath);
+      res.send(fileBuffer);
+      
+      logActivity('labels', `Item label downloaded: ${labelFile}`, 'success');
+      
+    } catch (error) {
+      res.status(404).json({
+        success: false,
+        message: 'Label file not found or cannot be accessed'
+      });
+    }
+    
+  } catch (error) {
+    logActivity('labels', `Error downloading item label: ${error.message}`, 'error');
+    res.status(500).json({
+      success: false,
+      message: error.message
+    });
+  }
+});
+
+// Legacy label download endpoint (for backward compatibility)
 app.get('/api/labels/:orderId/:trackingCode', requireAuth, async (req, res) => {
   try {
     const { orderId, trackingCode } = req.params;
